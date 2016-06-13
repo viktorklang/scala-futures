@@ -135,7 +135,7 @@ private[future] object Promise {
     private[ManyCallbacks] final def remainingCapacity(): Int =
       if (c2 eq NoopCallback) 2 else if (c1 eq NoopCallback) 1 else 0
 
-    private[ManyCallbacks] def merge[U >: T](m: ManyCallbacks[U]): ManyCallbacks[U] =
+    private[ManyCallbacks] final def merge[U >: T](m: ManyCallbacks[U]): ManyCallbacks[U] =
       if (this ne m) { // Do not merge with itself
         (remainingCapacity(): @switch) match {
           case 0 =>
@@ -159,7 +159,7 @@ private[future] object Promise {
         }
       } else this
 
-    def append[U >: T](c: Callbacks[U]): Callbacks[U] = c match {
+    final def append[U >: T](c: Callbacks[U]): Callbacks[U] = c match {
       case m: ManyCallbacks[U] => this merge m
       case a: Callback[U]      =>
         if (a ne NoopCallback) { // Don't append Noops
@@ -171,7 +171,7 @@ private[future] object Promise {
         } else this
     }
 
-    override def prepend[U >: T](c: Callbacks[U]): Callbacks[U] = c match {
+    override final def prepend[U >: T](c: Callbacks[U]): Callbacks[U] = c match {
       case m: ManyCallbacks[U] => m merge this
       case a: Callback[U]      =>
         if (a ne NoopCallback) { // Don't prepend Noops
@@ -183,14 +183,14 @@ private[future] object Promise {
         } else this
     }
 
-    override def submitWithValue(v: Try[T @scala.annotation.unchecked.uncheckedVariance]): Unit = {
+    override final def submitWithValue(v: Try[T @scala.annotation.unchecked.uncheckedVariance]): Unit = {
       c1.submitWithValue(v)
       c2.submitWithValue(v)
       c3.submitWithValue(v)
       c4.submitWithValue(v)
     }
 
-    override def toString: String = s"Callbacks($c1, $c2, $c3, $c4)"
+    override final def toString: String = s"Callbacks($c1, $c2, $c3, $c4)"
   }
 
   /**

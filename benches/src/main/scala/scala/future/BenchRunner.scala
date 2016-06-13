@@ -16,6 +16,7 @@ object BenchRunner {
     val args2 = args.toList.flatMap {
       case "quick" => "-i 1 -wi 1 -f1 -t1".split(' ').toList
       case "full" => "-i 10 -wi 4 -f3 -t1".split(' ').toList
+      case "long" => "-i 1000 -wi 4 -f3 -t1".split(' ').toList
       case "jitwatch" => "-jvmArgs=-XX:+UnlockDiagnosticVMOptions -XX:+TraceClassLoading -XX:+LogCompilation" :: Nil
       case other => other :: Nil
     }
