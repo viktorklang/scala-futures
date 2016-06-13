@@ -12,6 +12,9 @@ import scala.{future => improved}
 @State(Scope.Benchmark)
 @BenchmarkMode(Array(Mode.SingleShotTime))
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
+@Warmup(iterations = 10)
+@Measurement(iterations = 10000)
+@Fork(1)
 class CallbackBenchmark {
 
   val callback = (_: Try[Unit]) => ()
@@ -21,80 +24,66 @@ class CallbackBenchmark {
   var improvedPromise: improved.Promise[Unit] = _
 
   @TearDown(Level.Invocation)
-  def teardown = {
+  final def teardown = {
     stdlibPromise = null
     improvedPromise = null
   }
 
   @Setup(Level.Invocation)
-  @Group("stdlib")
-  def setupStdlib = stdlibPromise = stdlib.Promise[Unit]
-
-  @Setup(Level.Invocation)
-  @Group("improved")
-  def setupImproved = improvedPromise = improved.Promise[Unit]
+  final def setup = {
+    stdlibPromise = stdlib.Promise[Unit]
+    improvedPromise = improved.Promise[Unit]
+  }
 
   @Benchmark
-  @Group("improved")
   @OperationsPerInvocation(1)
-  def addingCallbacksImproved_1 = addingCallbacksImproved(1)
+  final def addingCallbacksImproved_1 = addingCallbacksImproved(1)
 
   @Benchmark
-  @Group("improved")
   @OperationsPerInvocation(2)
-  def addingCallbacksImproved_2 = addingCallbacksImproved(2)
+  final def addingCallbacksImproved_2 = addingCallbacksImproved(2)
 
   @Benchmark
-  @Group("improved")
   @OperationsPerInvocation(4)
-  def addingCallbacksImproved_4 = addingCallbacksImproved(4)
+  final def addingCallbacksImproved_4 = addingCallbacksImproved(4)
 
   @Benchmark
-  @Group("improved")
   @OperationsPerInvocation(16)
-  def addingCallbacksImproved_16 = addingCallbacksImproved(16)
+  final def addingCallbacksImproved_16 = addingCallbacksImproved(16)
 
   @Benchmark
-  @Group("improved")
   @OperationsPerInvocation(64)
-  def addingCallbacksImproved_64 = addingCallbacksImproved(64)
+  final def addingCallbacksImproved_64 = addingCallbacksImproved(64)
 
   @Benchmark
-  @Group("improved")
   @OperationsPerInvocation(8192)
-  def addingCallbacksImproved_8192 = addingCallbacksImproved(8192)
+  final def addingCallbacksImproved_8192 = addingCallbacksImproved(8192)
 
   @Benchmark
-  @Group("stdlib")
   @OperationsPerInvocation(1)
-  def addingCallbacksStdlib_1 = addingCallbacksStdlib(1)
+  final def addingCallbacksStdlib_1 = addingCallbacksStdlib(1)
 
   @Benchmark
-  @Group("stdlib")
   @OperationsPerInvocation(2)
-  def addingCallbacksStdlib_2 = addingCallbacksStdlib(2)
+  final def addingCallbacksStdlib_2 = addingCallbacksStdlib(2)
 
   @Benchmark
-  @Group("stdlib")
   @OperationsPerInvocation(4)
-  def addingCallbacksStdlib_4 = addingCallbacksStdlib(4)
+  final def addingCallbacksStdlib_4 = addingCallbacksStdlib(4)
 
   @Benchmark
-  @Group("stdlib")
   @OperationsPerInvocation(16)
-  def addingCallbacksStdlib_16 = addingCallbacksStdlib(16)
+  final def addingCallbacksStdlib_16 = addingCallbacksStdlib(16)
 
   @Benchmark
-  @Group("stdlib")
   @OperationsPerInvocation(64)
-  def addingCallbacksStdlib_64 = addingCallbacksStdlib(64)
+  final def addingCallbacksStdlib_64 = addingCallbacksStdlib(64)
 
   @Benchmark
-  @Group("stdlib")
   @OperationsPerInvocation(8192)
-  def addingCallbacksStdlib_8192 = addingCallbacksStdlib(8192)
+  final def addingCallbacksStdlib_8192 = addingCallbacksStdlib(8192)
 
-  def addingCallbacksImproved(ops: Int) = {
+  final def addingCallbacksImproved(ops: Int) = {
     import stdlib.ExecutionContext.Implicits._
     val f = improvedPromise.future
     var i = ops
@@ -104,7 +93,7 @@ class CallbackBenchmark {
     }
   }
   
-  def addingCallbacksStdlib(ops: Int) = {
+  final def addingCallbacksStdlib(ops: Int) = {
     import stdlib.ExecutionContext.Implicits._
     val f = stdlibPromise.future
     var i = ops
