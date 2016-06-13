@@ -11,7 +11,7 @@ import scala.{future => improved}
 
 @State(Scope.Benchmark)
 @BenchmarkMode(Array(Mode.SingleShotTime))
-@OutputTimeUnit(TimeUnit.MICROSECONDS)
+@OutputTimeUnit(TimeUnit.NANOSECONDS)
 @Warmup(iterations = 10)
 @Measurement(iterations = 10000)
 @Fork(1)
