@@ -9,6 +9,49 @@ import scala.util.Try
 import scala.{concurrent => stdlib}
 import scala.{future => improved}
 
+abstract class TryCompleteBenchFun { 
+  def setup(): Unit
+  def apply(ops: Int): Int
+  def teardown(): Unit
+}
+
+class StdlibTryCompleteBenchFun(result: Try[Unit]) extends TryCompleteBenchFun {
+  var p: stdlib.Promise[Unit] = _
+  final def setup(): Unit = {
+    p = stdlib.Promise[Unit]
+  }
+  final def apply(ops: Int): Int = {
+    var i = ops
+    while(i > 0) {
+      p.tryComplete(result)
+      i -= 1
+    }
+    i
+  }
+  final def teardown(): Unit = {
+    p = null
+  }
+}
+
+class ImprovedTryCompleteBenchFun(result: Try[Unit]) extends TryCompleteBenchFun {
+  var p: improved.Promise[Unit] = _
+  final def setup(): Unit = {
+    p = improved.Promise[Unit]
+  }
+  final def apply(ops: Int): Int = {
+    var i = ops
+    while(i > 0) {
+      p.tryComplete(result)
+      i -= 1
+    }
+    i
+  }
+  final def teardown(): Unit = {
+    p = null
+  }
+}
+
+
 @State(Scope.Benchmark)
 @BenchmarkMode(Array(Mode.SingleShotTime))
 @OutputTimeUnit(TimeUnit.NANOSECONDS)
@@ -17,95 +60,56 @@ import scala.{future => improved}
 @Fork(1)
 class CompletionBenchmark {
 
-  var stdlibPromise: stdlib.Promise[Unit] = _
+  @Param(Array[String]("stdlib", "improved"))
+  var impl: String = _
 
-  var improvedPromise: improved.Promise[Unit] = _
+  @Param(Array[String]("success", "failure"))
+  var result: String = _
 
-  @Param(Array[String]("true", "false"))
-  var failure: String = _
+  var benchFun: TryCompleteBenchFun = _
 
-  var result: Try[Unit] = _
+  @Setup(Level.Trial)
+  final def startup = {
+    val r = result match {
+      case "success" => Try(())
+      case "failure" => Try(throw new RuntimeException("expected failure"))
+      case other => throw new IllegalArgumentException("result must be either 'success' or 'failure' but was '" + other + "'")
+    }
+
+    benchFun = impl match {
+      case "stdlib" => new StdlibTryCompleteBenchFun(r)
+      case "improved" => new ImprovedTryCompleteBenchFun(r)
+      case other => throw new IllegalArgumentException("impl must be either 'stdlib' or 'improved' but was '" + other + "'")
+    }
+  }
 
   @TearDown(Level.Invocation)
-  final def teardown = {
-    stdlibPromise = null
-    improvedPromise = null
-  }
-
-  @Setup(Level.Iteration)
-  final def startup = {
-    result = if (java.lang.Boolean.valueOf(failure)) Try(throw new RuntimeException("failedResult")) else Try(())
-  }
+  final def teardown = benchFun.teardown()
 
   @Setup(Level.Invocation)
-  final def setup = {
-    stdlibPromise = stdlib.Promise[Unit]
-    improvedPromise = improved.Promise[Unit]
-  }
+  final def setup = benchFun.setup()
 
   @Benchmark
   @OperationsPerInvocation(1)
-  final def tryCompleteImproved_1 = tryCompleteImproved(1)
+  final def tryComplete_1 = benchFun(1)
 
   @Benchmark
   @OperationsPerInvocation(2)
-  final def tryCompleteImproved_2 = tryCompleteImproved(2)
+  final def tryComplete_2 = benchFun(2)
 
   @Benchmark
   @OperationsPerInvocation(4)
-  final def tryCompleteImproved_4 = tryCompleteImproved(4)
+  final def tryComplete_4 = benchFun(3)
 
   @Benchmark
   @OperationsPerInvocation(16)
-  final def tryCompleteImproved_16 = tryCompleteImproved(16)
+  final def tryComplete_16 = benchFun(16)
 
   @Benchmark
   @OperationsPerInvocation(64)
-  final def tryCompleteImproved_64 = tryCompleteImproved(64)
+  final def tryComplete_64 = benchFun(64)
 
   @Benchmark
   @OperationsPerInvocation(8192)
-  final def tryCompleteImproved_8192 = tryCompleteImproved(8192)
-
-  @Benchmark
-  @OperationsPerInvocation(1)
-  final def tryCompleteStdlib_1 = tryCompleteStdlib(1)
-
-  @Benchmark
-  @OperationsPerInvocation(2)
-  final def tryCompleteStdlib_2 = tryCompleteStdlib(2)
-
-  @Benchmark
-  @OperationsPerInvocation(4)
-  final def tryCompleteStdlib_4 = tryCompleteStdlib(4)
-
-  @Benchmark
-  @OperationsPerInvocation(16)
-  final def tryCompleteStdlib_16 = tryCompleteStdlib(16)
-
-  @Benchmark
-  @OperationsPerInvocation(64)
-  final def tryCompleteStdlib_64 = tryCompleteStdlib(64)
-
-  @Benchmark
-  @OperationsPerInvocation(8192)
-  final def tryCompleteStdlib_8192 = tryCompleteStdlib(8192)
-
-  final def tryCompleteImproved(ops: Int) = {
-    var i = ops
-    while(i > 0) {
-      improvedPromise.tryComplete(result)
-      i -= 1
-    }
-    i
-  }
-  
-  final def tryCompleteStdlib(ops: Int) = {
-    var i = ops
-    while(i > 0) {
-      stdlibPromise.tryComplete(result)
-      i -= 1
-    }
-    i
-  }
+  final def tryComplete_8192 = benchFun(8192)
 }

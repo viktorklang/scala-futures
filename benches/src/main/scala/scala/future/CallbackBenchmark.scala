@@ -9,6 +9,55 @@ import scala.util.Try
 import scala.{concurrent => stdlib}
 import scala.{future => improved}
 
+abstract class CallbackBenchFun {
+  val callback = (_: Try[Unit]) => ()
+
+  def setup(): Unit
+  def apply(ops: Int): Int
+  def teardown(): Unit
+}
+
+object StdlibCallbackBenchFun extends CallbackBenchFun {
+  var p: stdlib.Promise[Unit] = _
+  final def setup(): Unit = {
+    p = stdlib.Promise[Unit]
+  }
+  final def apply(ops: Int): Int = {
+    import stdlib.ExecutionContext.Implicits._
+    val f = p.future
+    var i = ops
+    while(i > 0) {
+      f.onComplete(callback)
+      i -= 1
+    }
+    i
+  }
+  final def teardown(): Unit = {
+    p = null
+  }
+}
+
+object ImprovedCallbackBenchFun extends CallbackBenchFun {
+  var p: improved.Promise[Unit] = _
+  final def setup(): Unit = {
+    p = improved.Promise[Unit]
+  }
+  final def apply(ops: Int): Int = {
+    import stdlib.ExecutionContext.Implicits._
+    val f = p.future
+    var i = ops
+    while(i > 0) {
+      f.onComplete(callback)
+      i -= 1
+    }
+    i
+  }
+  final def teardown(): Unit = {
+    p = null
+  }
+}
+
+
 @State(Scope.Benchmark)
 @BenchmarkMode(Array(Mode.SingleShotTime))
 @OutputTimeUnit(TimeUnit.NANOSECONDS)
@@ -17,91 +66,47 @@ import scala.{future => improved}
 @Fork(1)
 class CallbackBenchmark {
 
-  val callback = (_: Try[Unit]) => ()
+  @Param(Array[String]("stdlib", "improved"))
+  var impl: String = _
 
-  var stdlibPromise: stdlib.Promise[Unit] = _
+  var benchFun: CallbackBenchFun = _
 
-  var improvedPromise: improved.Promise[Unit] = _
+  @Setup(Level.Trial)
+  final def startup = {
+    benchFun = impl match {
+      case "stdlib" => StdlibCallbackBenchFun
+      case "improved" => ImprovedCallbackBenchFun
+      case other => throw new IllegalArgumentException("impl must be either 'stdlib' or 'improved' but was '" + other + "'")
+    }
+  }
 
   @TearDown(Level.Invocation)
-  final def teardown = {
-    stdlibPromise = null
-    improvedPromise = null
-  }
+  final def teardown = benchFun.teardown()
 
   @Setup(Level.Invocation)
-  final def setup = {
-    stdlibPromise = stdlib.Promise[Unit]
-    improvedPromise = improved.Promise[Unit]
-  }
+  final def setup = benchFun.setup()
 
   @Benchmark
   @OperationsPerInvocation(1)
-  final def addingCallbacksImproved_1 = addingCallbacksImproved(1)
+  final def onComplete_1 = benchFun(1)
 
   @Benchmark
   @OperationsPerInvocation(2)
-  final def addingCallbacksImproved_2 = addingCallbacksImproved(2)
+  final def onComplete_2 = benchFun(2)
 
   @Benchmark
   @OperationsPerInvocation(4)
-  final def addingCallbacksImproved_4 = addingCallbacksImproved(4)
+  final def onComplete_4 = benchFun(3)
 
   @Benchmark
   @OperationsPerInvocation(16)
-  final def addingCallbacksImproved_16 = addingCallbacksImproved(16)
+  final def onComplete_16 = benchFun(16)
 
   @Benchmark
   @OperationsPerInvocation(64)
-  final def addingCallbacksImproved_64 = addingCallbacksImproved(64)
+  final def onComplete_64 = benchFun(64)
 
   @Benchmark
   @OperationsPerInvocation(8192)
-  final def addingCallbacksImproved_8192 = addingCallbacksImproved(8192)
-
-  @Benchmark
-  @OperationsPerInvocation(1)
-  final def addingCallbacksStdlib_1 = addingCallbacksStdlib(1)
-
-  @Benchmark
-  @OperationsPerInvocation(2)
-  final def addingCallbacksStdlib_2 = addingCallbacksStdlib(2)
-
-  @Benchmark
-  @OperationsPerInvocation(4)
-  final def addingCallbacksStdlib_4 = addingCallbacksStdlib(4)
-
-  @Benchmark
-  @OperationsPerInvocation(16)
-  final def addingCallbacksStdlib_16 = addingCallbacksStdlib(16)
-
-  @Benchmark
-  @OperationsPerInvocation(64)
-  final def addingCallbacksStdlib_64 = addingCallbacksStdlib(64)
-
-  @Benchmark
-  @OperationsPerInvocation(8192)
-  final def addingCallbacksStdlib_8192 = addingCallbacksStdlib(8192)
-
-  final def addingCallbacksImproved(ops: Int) = {
-    import stdlib.ExecutionContext.Implicits._
-    val f = improvedPromise.future
-    var i = ops
-    while(i > 0) {
-      f.onComplete(callback)
-      i -= 1
-    }
-    i
-  }
-  
-  final def addingCallbacksStdlib(ops: Int) = {
-    import stdlib.ExecutionContext.Implicits._
-    val f = stdlibPromise.future
-    var i = ops
-    while(i > 0) {
-      f.onComplete(callback)
-      i -= 1
-    }
-    i
-  }
+  final def onComplete_8192 = benchFun(8192)
 }
