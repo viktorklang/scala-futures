@@ -52,17 +52,16 @@ private[future] trait Promise[T] extends scala.future.Promise[T] with scala.futu
 
 private[future] object Promise {
 
-  private def resolveTry[T](source: Try[T]): Try[T] = source match {
-    case Failure(t) => resolver(t)
+  private final def resolveTry[T](source: Try[T]): Try[T] = source match {
+    case f @ Failure(throwable) =>
+      throwable match {
+        case t: scala.runtime.NonLocalReturnControl[_] => Success(t.value.asInstanceOf[T])
+        case t: scala.util.control.ControlThrowable    => Failure(new ExecutionException("Boxed ControlThrowable", t))
+        case t: InterruptedException                   => Failure(new ExecutionException("Boxed InterruptedException", t))
+        case e: Error                                  => Failure(new ExecutionException("Boxed Error", e))
+        case _                                         => f
+      }
     case _          => source
-  }
-
-  private def resolver[T](throwable: Throwable): Try[T] = throwable match {
-    case t: scala.runtime.NonLocalReturnControl[_] => Success(t.value.asInstanceOf[T])
-    case t: scala.util.control.ControlThrowable    => Failure(new ExecutionException("Boxed ControlThrowable", t))
-    case t: InterruptedException                   => Failure(new ExecutionException("Boxed InterruptedException", t))
-    case e: Error                                  => Failure(new ExecutionException("Boxed Error", e))
-    case t                                         => Failure(t)
   }
 
   /* Encodes the concept of having callbacks.
