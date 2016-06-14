@@ -114,72 +114,81 @@ private[future] object Promise {
         if (a eq NoopCallback) this
         else if (this eq NoopCallback) a
         else if (this eq a) this
-        else new ManyCallbacks[U](c3 = this, c4 = a)
+        else ManyCallbacks.two(this, a)
       case m: ManyCallbacks[U] => m append this // m append this == this prepend m
     }
 
     override def toString: String = s"Callback($executor, $onComplete)"
   }
-
-  final class ManyCallbacks[+T](
-    val c1: Callbacks[T] = NoopCallback,
-    val c2: Callbacks[T] = NoopCallback,
+  object ManyCallbacks {
+    def two[U](second: Callbacks[U], first: Callbacks[U]): ManyCallbacks[U] =
+      new ManyCallbacks[U](NoopCallback, NoopCallback, second, first, 2)
+    def three[U](third: Callbacks[U], second: Callbacks[U], first: Callbacks[U]): ManyCallbacks[U] =
+      new ManyCallbacks[U](NoopCallback, third, second, first, 1)
+    def four[U](fourth: Callbacks[U], third: Callbacks[U], second: Callbacks[U], first: Callbacks[U]): ManyCallbacks[U] =
+      new ManyCallbacks[U](fourth, third, second, first, 0)
+  }
+  final class ManyCallbacks[+T] private[ManyCallbacks] (
+    val c1: Callbacks[T],
+    val c2: Callbacks[T],
     val c3: Callbacks[T],
-    val c4: Callbacks[T]) extends Callbacks[T] {
+    val c4: Callbacks[T],
+    private[ManyCallbacks] val remainingCapacity: Int) extends Callbacks[T] {
 
     //Don't want to incur the runtime ovehead of these checks, but this invariant will hold true:
     //require(c3 ne NoopCallback)
     //require(c4 ne NoopCallback)
 
-    private[ManyCallbacks] final def remainingCapacity(): Int =
-      if (c2 eq NoopCallback) 2 else if (c1 eq NoopCallback) 1 else 0
+    private[this] final def merge0[U >: T](m: ManyCallbacks[U]): ManyCallbacks[U] =
+      (m.remainingCapacity: @switch) match {
+        case 0 => ManyCallbacks.two(this, m)
+        case 1 => ManyCallbacks.four(c1, c2, c3, ManyCallbacks.four(c4, m.c2, m.c3, m.c4))
+        case 2 => ManyCallbacks.three(c1, c2, ManyCallbacks.four(c3, c4, m.c3, m.c4))
+      }
+
+    private[this] final def merge1[U >: T](m: ManyCallbacks[U]): ManyCallbacks[U] =
+      (m.remainingCapacity: @switch) match {
+        case 0 => ManyCallbacks.four(c2, c3, c4, m)
+        case 1 => ManyCallbacks.three(c2, c3, ManyCallbacks.four(c4, m.c2, m.c3, m.c4))
+        case 2 => ManyCallbacks.two(c2, ManyCallbacks.four(c3, c4, m.c3, m.c4))
+      }
+
+    private[this] final def merge2[U >: T](m: ManyCallbacks[U]): ManyCallbacks[U] =
+      (m.remainingCapacity: @switch) match {
+        case 0 => ManyCallbacks.four(c2, c3, c4, m)
+        case 1 => ManyCallbacks.two(c3, ManyCallbacks.four(c4, m.c2, m.c3, m.c4))
+        case 2 => ManyCallbacks.four(c3, c4, m.c3, m.c4)
+      }
 
     private[ManyCallbacks] final def merge[U >: T](m: ManyCallbacks[U]): ManyCallbacks[U] =
       if (this ne m) { // Do not merge with itself
-        (remainingCapacity(): @switch) match {
-          case 0 =>
-            (m.remainingCapacity(): @switch) match {
-              case 0 => new ManyCallbacks[U](c3 = this, c4 = m)
-              case 1 => new ManyCallbacks[U](c1 = c1, c2 = c2, c3 = c3, c4 = new ManyCallbacks[U](c1 = c4, c2 = m.c2, c3 = m.c3, c4 = m.c4))
-              case 2 => new ManyCallbacks[U](c2 = c1, c3 = c2, c4 = new ManyCallbacks[U](c1 = c3, c2 = c4, c3 = m.c3, c4 = m.c4))
-            }
-          case 1 =>
-            (m.remainingCapacity(): @switch) match {
-              case 0 => new ManyCallbacks[U](c1 = c2, c2 = c3, c3 = c4, c4 = m)
-              case 1 => new ManyCallbacks[U](c2 = c2, c3 = c3, c4 = new ManyCallbacks[U](c1 = c4, c2 = m.c2, c3 = m.c3, c4 = m.c4))
-              case 2 => new ManyCallbacks[U](c3 = c2, c4 = new ManyCallbacks[U](c1 = c3, c2 = c4, c3 = m.c3, c4 = m.c4))
-            }
-          case 2 =>
-            (m.remainingCapacity(): @switch) match {
-              case 0 => new ManyCallbacks[U](c1 = c2, c2 = c3, c3 = c4, c4 = m)
-              case 1 => new ManyCallbacks[U](c3 = c3, c4 = new ManyCallbacks[U](c1 = c4, c2 = m.c2, c3 = m.c3, c4 = m.c4))
-              case 2 => new ManyCallbacks[U](c1 = c3, c2 = c4, c3 = m.c3, c4 = m.c4)
-            }
+        (remainingCapacity: @switch) match {
+          case 0 => merge0(m)
+          case 1 => merge1(m)
+          case 2 => merge2(m)
         }
       } else this
 
     final def append[U >: T](c: Callbacks[U]): Callbacks[U] = c match {
       case m: ManyCallbacks[U] => this merge m
+      case a if a eq NoopCallback => this // Don't append Noops
       case a: Callback[U]      =>
-        if (a ne NoopCallback) { // Don't append Noops
-          (remainingCapacity(): @switch) match {
-            case 0 => new ManyCallbacks(c3 = this, c4 = a)
-            case 1 => new ManyCallbacks[U](c1 = c2, c2 = c3, c3 = c4, c4 = a)
-            case 2 => new ManyCallbacks[U](c2 = c3, c3 = c4, c4 = a)
-          }
-        } else this
+        (remainingCapacity: @switch) match {
+          case 0 => ManyCallbacks.two(this, a)
+          case 1 => ManyCallbacks.four(c2, c3, c4, a)
+          case 2 => ManyCallbacks.three(c3, c4, a)
+        }
     }
 
     override final def prepend[U >: T](c: Callbacks[U]): Callbacks[U] = c match {
       case m: ManyCallbacks[U] => m merge this
+      case a if a eq NoopCallback => this // Don't prepend Noops
       case a: Callback[U]      =>
-        if (a ne NoopCallback) { // Don't prepend Noops
-          (remainingCapacity(): @switch) match {
-            case 0 => new ManyCallbacks[U](c3 = a, c4 = this)
-            case 1 => new ManyCallbacks[U](c1 = a, c2 = c2, c3 = c3, c4 = c4)
-            case 2 => new ManyCallbacks[U](c2 = a, c3 = c3, c4 = c4)
-          }
-        } else this
+        (remainingCapacity: @switch) match {
+          case 0 => ManyCallbacks.two(a, this)
+          case 1 => ManyCallbacks.four(a, c2, c3, c4)
+          case 2 => ManyCallbacks.three(a, c3, c4)
+        }
     }
 
     override final def submitWithValue(v: Try[T @scala.annotation.unchecked.uncheckedVariance]): Unit = {
