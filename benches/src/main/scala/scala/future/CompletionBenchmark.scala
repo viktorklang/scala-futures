@@ -97,6 +97,7 @@ class CompletionBenchmark {
       improvedPromise.tryComplete(result)
       i -= 1
     }
+    i
   }
   
   final def tryCompleteStdlib(ops: Int) = {
@@ -105,5 +106,6 @@ class CompletionBenchmark {
       stdlibPromise.tryComplete(result)
       i -= 1
     }
+    i
   }
 }

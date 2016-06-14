@@ -91,6 +91,7 @@ class CallbackBenchmark {
       f.onComplete(callback)
       i -= 1
     }
+    i
   }
   
   final def addingCallbacksStdlib(ops: Int) = {
@@ -101,5 +102,6 @@ class CallbackBenchmark {
       f.onComplete(callback)
       i -= 1
     }
+    i
   }
 }
