@@ -90,7 +90,7 @@ private[future] object Promise {
     val executor: ExecutionContext,
     val onComplete: Try[T] => Any) extends Callbacks[T] with Runnable with OnCompleteRunnable {
 
-    var value: Try[T] = null
+    private[this] var value: Try[T] = null
 
     override def run(): Unit = value match {
       case null => throw new IllegalStateException("Callback value must be set when running")
@@ -170,9 +170,9 @@ private[future] object Promise {
       } else this
 
     final def append[U >: T](c: Callbacks[U]): Callbacks[U] = c match {
-      case m: ManyCallbacks[U] => this merge m
+      case m: ManyCallbacks[U]    => this merge m
       case a if a eq NoopCallback => this // Don't append Noops
-      case a: Callback[U]      =>
+      case a: Callback[U]         =>
         (remainingCapacity: @switch) match {
           case 0 => ManyCallbacks.two(this, a)
           case 1 => ManyCallbacks.four(c2, c3, c4, a)
@@ -181,9 +181,9 @@ private[future] object Promise {
     }
 
     override final def prepend[U >: T](c: Callbacks[U]): Callbacks[U] = c match {
-      case m: ManyCallbacks[U] => m merge this
+      case m: ManyCallbacks[U]    => m merge this
       case a if a eq NoopCallback => this // Don't prepend Noops
-      case a: Callback[U]      =>
+      case a: Callback[U]         =>
         (remainingCapacity: @switch) match {
           case 0 => ManyCallbacks.two(a, this)
           case 1 => ManyCallbacks.four(a, c2, c3, c4)
