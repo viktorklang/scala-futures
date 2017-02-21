@@ -9,7 +9,7 @@
 package scala.future
 
 import scala.concurrent.{BlockContext, ExecutionContext, CanAwait}
-
+import java.util.ArrayDeque
 import java.util.concurrent.Executor
 import scala.annotation.tailrec
 
@@ -42,55 +42,47 @@ import scala.annotation.tailrec
  * in the calling thread synchronously. It must enqueue/handoff the Runnable.
  */
 private[future] trait BatchingExecutor extends Executor {
+  private val _tasksLocal = new ThreadLocal[Batch]()
 
-  // invariant: if "_tasksLocal.get ne null" then we are inside BatchingRunnable.run; if it is null, we are outside
-  private val _tasksLocal = new ThreadLocal[List[Runnable]]()
-
-  private class Batch(val initial: List[Runnable]) extends Runnable with BlockContext with (BlockContext => Unit) {
-    private var parentBlockContext: BlockContext = _
+  private final class Batch(size: Int) extends ArrayDeque[Runnable](size) with Runnable with BlockContext with (BlockContext => Unit) {
+    def this(r: Runnable) = {
+      this(4)
+      addLast(r)
+    }
+    private[this] var parentBlockContext: BlockContext = _
     // this method runs in the delegate ExecutionContext's thread
-    override def run(): Unit = BlockContext.withBlockContext(BlockContext.current)(this)
+    override final def run(): Unit = BlockContext.withBlockContext(BlockContext.current)(this)
 
-    override def apply(prevBlockContext: BlockContext): Unit = {
+    override final def apply(prevBlockContext: BlockContext): Unit = {
       require(_tasksLocal.get eq null)
       try {
         parentBlockContext = prevBlockContext
-
-        @tailrec def processBatch(batch: List[Runnable]): Unit = batch match {
-          case Nil => ()
-          case head :: tail =>
-            _tasksLocal set tail
-            try {
-              head.run()
-            } catch {
+        _tasksLocal.set(this)
+        @tailrec def runAll(): Unit = {
+          val next = pollLast()
+          if (next ne null) {
+            try next.run() catch {
               case t: Throwable =>
-                // if one task throws, move the
-                // remaining tasks to another thread
-                // so we can throw the exception
-                // up to the invoking executor
-                val remaining = _tasksLocal.get
-                _tasksLocal set Nil
-                unbatchedExecute(new Batch(remaining)) //TODO what if this submission fails?
+                _tasksLocal.remove()
+                unbatchedExecute(this) //TODO what if this submission fails?
                 throw t // rethrow
-            }
-            processBatch(_tasksLocal.get) // since head.run() can add entries, always do _tasksLocal.get here
+             }
+            runAll()
+          }
         }
-
-        processBatch(initial)
-      } finally {
+        runAll()
         _tasksLocal.remove()
+      } finally {
         parentBlockContext = null
       }
     }
 
     override def blockOn[T](thunk: => T)(implicit permission: CanAwait): T = {
-      // if we know there will be blocking, we don't want to keep tasks queued up because it could deadlock.
-      {
-        _tasksLocal.get match {
-          case Nil  => ()
-          case null => _tasksLocal.set(Nil)
-          case some => _tasksLocal.set(Nil); unbatchedExecute(new Batch(some))
-        }
+      if(!isEmpty) { // if we know there will be blocking, we don't want to keep tasks queued up because it could deadlock.
+        val b = new Batch(this.size)
+        b.addAll(this)
+        this.clear()
+        unbatchedExecute(b)
       }
 
       // now delegate the blocking to the previous BC
@@ -104,15 +96,12 @@ private[future] trait BatchingExecutor extends Executor {
   override def execute(runnable: Runnable): Unit = {
     if (batchable(runnable)) { // If we can batch the runnable
       _tasksLocal.get match {
-        case null => unbatchedExecute(new Batch(List(runnable))) // If we aren't in batching mode yet, enqueue batch
-        case some => _tasksLocal.set(runnable :: some) // If we are already in batching mode, add to batch
+        case null => unbatchedExecute(new Batch(runnable)) // If we aren't in batching mode yet, enqueue batch
+        case some => some.addLast(runnable)
       }
     } else unbatchedExecute(runnable) // If not batchable, just delegate to underlying
   }
 
   /** Override this to define which runnables will be batched. */
-  def batchable(runnable: Runnable): Boolean = runnable match {
-    case _: OnCompleteRunnable => true
-    case _                     => false
-  }
+  def batchable(runnable: Runnable): Boolean = runnable.isInstanceOf[OnCompleteRunnable]
 }

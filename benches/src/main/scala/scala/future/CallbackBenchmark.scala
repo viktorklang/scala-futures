@@ -3,13 +3,13 @@ package scala.future
 import scala.concurrent.duration._
 import java.util.concurrent.TimeUnit
 import org.openjdk.jmh.annotations._
-import scala.concurrent.Await
 import scala.util.Try
 
 import scala.{concurrent => stdlib}
 import scala.{future => improved}
 
 abstract class CallbackBenchFun {
+  implicit def ec: stdlib.ExecutionContext
   val callback = (_: Try[Unit]) => ()
 
   def setup(): Unit
@@ -18,12 +18,16 @@ abstract class CallbackBenchFun {
 }
 
 object StdlibCallbackBenchFun extends CallbackBenchFun {
+  implicit final val ec: stdlib.ExecutionContext = new stdlib.ExecutionContext {
+    val g = stdlib.ExecutionContext.global
+    override final def execute(r: Runnable) = g.execute(r)
+    override final def reportFailure(t: Throwable) = g.reportFailure(t)
+  }
   var p: stdlib.Promise[Unit] = _
   final def setup(): Unit = {
     p = stdlib.Promise[Unit]
   }
   final def apply(ops: Int): Int = {
-    import stdlib.ExecutionContext.Implicits._
     val f = p.future
     var i = ops
     while(i > 0) {
@@ -38,12 +42,16 @@ object StdlibCallbackBenchFun extends CallbackBenchFun {
 }
 
 object ImprovedCallbackBenchFun extends CallbackBenchFun {
+  implicit final val ec: stdlib.ExecutionContext = new stdlib.ExecutionContext with BatchingExecutor {
+    val g = stdlib.ExecutionContext.global
+    override final def unbatchedExecute(r: Runnable) = g.execute(r)
+    override final def reportFailure(t: Throwable) = g.reportFailure(t)
+  }
   var p: improved.Promise[Unit] = _
   final def setup(): Unit = {
     p = improved.Promise[Unit]
   }
   final def apply(ops: Int): Int = {
-    import stdlib.ExecutionContext.Implicits._
     val f = p.future
     var i = ops
     while(i > 0) {

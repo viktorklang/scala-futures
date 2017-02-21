@@ -1,6 +1,6 @@
 name := "scala-futures"
 
-scalaVersion := "2.12.0"
+scalaVersion := "2.12.1"
 
 lazy val root = project in file(".")
 

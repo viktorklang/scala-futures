@@ -219,7 +219,7 @@ trait Future[+T] extends Awaitable[T] {
   def transform[S](s: T => S, f: Throwable => Throwable)(implicit executor: ExecutionContext): Future[S] =
     transform {
       case Success(r) => Try(s(r))
-      case Failure(t) => Try(throw f(t)) // will throw fatal errors!
+      case Failure(t) => Failure(f(t)) // will throw fatal errors!
     }
 
   /** Creates a new Future by applying the specified function to the result
@@ -397,10 +397,8 @@ trait Future[+T] extends Awaitable[T] {
    *  @param that    the other `Future`
    *  @return        a `Future` with the results of both futures or the failure of the first of them that failed
    */
-  def zip[U](that: Future[U]): Future[(T, U)] = {
-    implicit val ec = internalExecutor
-    flatMap { r1 => that.map(r2 => (r1, r2)) }
-  }
+  def zip[U](that: Future[U]): Future[(T, U)] =
+    zipWith(that)(Tuple2.apply)(internalExecutor)
 
   /** Zips the values of `this` and `that` future using a function `f`,
    *  and creates a new future holding the result.

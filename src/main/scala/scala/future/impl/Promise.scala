@@ -53,6 +53,7 @@ private[future] trait Promise[T] extends scala.future.Promise[T] with scala.futu
 private[future] object Promise {
 
   private final def resolveTry[T](source: Try[T]): Try[T] = source match {
+    case _: Success[_]                                 => source
     case f @ Failure(throwable) =>
       throwable match {
         case t: scala.runtime.NonLocalReturnControl[_] => Success(t.value.asInstanceOf[T])
@@ -61,11 +62,11 @@ private[future] object Promise {
         case e: Error                                  => Failure(new ExecutionException("Boxed Error", e))
         case _                                         => f
       }
-    case _          => source
+    case _                                             => source
   }
 
   /* Encodes the concept of having callbacks.
-   * This is an `abstract method` to make sure calls are `invokevirtual` rather than `invokeinterface`
+   * This is an `abstract class` to make sure calls are `invokevirtual` rather than `invokeinterface`
    */
   sealed abstract class Callbacks[+T] {
     /* Logically prepends the callback `c` onto `this` callback */
@@ -191,7 +192,7 @@ private[future] object Promise {
         }
     }
 
-    override final def submitWithValue(v: Try[T @scala.annotation.unchecked.uncheckedVariance]): Unit = {
+    override final def submitWithValue(v: Try[T @uncheckedVariance]): Unit = {
       c1.submitWithValue(v)
       c2.submitWithValue(v)
       c3.submitWithValue(v)
@@ -390,24 +391,19 @@ private[future] object Promise {
       case _: Callbacks[_]       => false
     }
 
-    final def tryComplete(value: Try[T]): Boolean = {
-      val resolved = resolveTry(value)
-      tryCompleteAndGetCallbacks(resolved) match {
-        case null => false
-        case cb => cb.submitWithValue(resolved); true
-      }
-    }
+    final def tryComplete(value: Try[T]): Boolean =
+      tryComplete0(resolveTry(value))
 
-    /** Called by `tryComplete` to store the resolved value and get the list of
-     *  callbacks, or `null` if it is already completed.
-     */
     @tailrec
-    private def tryCompleteAndGetCallbacks(v: Try[T]): Callbacks[T] =
+    private def tryComplete0(v: Try[T]): Boolean =
       get() match {
-        case _: Try[_]             => null
+        case _: Try[_]             => false
         case cb: Callbacks[_]      =>
-          if (compareAndSet(cb, v)) cb.asInstanceOf[Callbacks[T]] else tryCompleteAndGetCallbacks(v)
-        case dp: DefaultPromise[_] => compressedRoot(dp).tryCompleteAndGetCallbacks(v)
+          if (compareAndSet(cb, v)) {
+            cb.asInstanceOf[Callbacks[T]].submitWithValue(v)
+            true
+          } else tryComplete0(v)
+        case dp: DefaultPromise[_] => compressedRoot(dp).tryComplete0(v)
       }
 
     final def onComplete[U](func: Try[T] => U)(implicit executor: ExecutionContext): Unit =
@@ -464,18 +460,12 @@ private[future] object Promise {
 
     private[this] sealed abstract class Kept[T] extends Promise[T] {
       def result: Try[T]
-
       override def value: Option[Try[T]] = Some(result)
-
       override def isCompleted: Boolean = true
-
       override def tryComplete(value: Try[T]): Boolean = false
-
       override def onComplete[U](func: Try[T] => U)(implicit executor: ExecutionContext): Unit =
         (new Callback(executor.prepare(), func)).submitWithValue(result)
-
       override def ready(atMost: Duration)(implicit permit: CanAwait): this.type = this
-
       override def result(atMost: Duration)(implicit permit: CanAwait): T = result.get
     }
 
@@ -491,7 +481,7 @@ private[future] object Promise {
       private[this] final def thisAs[S]: Future[S] = future.asInstanceOf[Future[S]]
 
       override def onSuccess[U](pf: PartialFunction[T, U])(implicit executor: ExecutionContext): Unit = ()
-      override def failed: Future[Throwable] = thisAs[Throwable]
+      override def failed: Future[Throwable] = KeptPromise(Success(result.exception)).future
       override def foreach[U](f: T => U)(implicit executor: ExecutionContext): Unit = ()
       override def map[S](f: T => S)(implicit executor: ExecutionContext): Future[S] = thisAs[S]
       override def flatMap[S](f: T => Future[S])(implicit executor: ExecutionContext): Future[S] = thisAs[S]
