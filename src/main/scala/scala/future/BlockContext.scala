@@ -66,7 +66,7 @@ object BlockContext {
     **/
   def defaultBlockContext: BlockContext = DefaultBlockContext
 
-  private val contextLocal = new ThreadLocal[BlockContext]()
+  private[this] val contextLocal = new ThreadLocal[BlockContext]()
 
   /**
     * @return the `BlockContext` that would be used for the calling `java.lang.Thread` currently.

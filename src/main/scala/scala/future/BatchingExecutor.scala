@@ -8,7 +8,7 @@
 
 package scala.future
 
-import scala.concurrent.{BlockContext, ExecutionContext, CanAwait}
+import scala.concurrent.{ExecutionContext, CanAwait}
 import java.util.ArrayDeque
 import java.util.concurrent.Executor
 import scala.annotation.tailrec
@@ -42,7 +42,7 @@ import scala.annotation.tailrec
  * in the calling thread synchronously. It must enqueue/handoff the Runnable.
  */
 private[future] trait BatchingExecutor extends Executor {
-  private val _tasksLocal = new ThreadLocal[Batch]()
+  private[this] val _tasksLocal = new ThreadLocal[Batch]()
 
   private final class Batch(size: Int) extends ArrayDeque[Runnable](size) with Runnable with BlockContext with (BlockContext => Unit) {
     def this(r: Runnable) = {
@@ -51,29 +51,30 @@ private[future] trait BatchingExecutor extends Executor {
     }
     private[this] var parentBlockContext: BlockContext = _
     // this method runs in the delegate ExecutionContext's thread
-    override final def run(): Unit = BlockContext.withBlockContext(BlockContext.current)(this)
+    override final def run(): Unit = BlockContext.usingBlockContext(BlockContext.current)(this)(this)
 
-    override final def apply(prevBlockContext: BlockContext): Unit = {
-      require(_tasksLocal.get eq null)
-      try {
-        parentBlockContext = prevBlockContext
-        _tasksLocal.set(this)
-        @tailrec def runAll(): Unit = {
-          val next = pollLast()
-          if (next ne null) {
-            try next.run() catch {
-              case t: Throwable =>
-                _tasksLocal.remove()
-                unbatchedExecute(this) //TODO what if this submission fails?
-                throw t // rethrow
-             }
-            runAll()
-          }
+    override final def apply(prevBlockContext: BlockContext): Unit =
+      if(_tasksLocal.get eq null) {
+        try {
+          parentBlockContext = prevBlockContext
+          _tasksLocal.set(this)
+          runAll()
+          _tasksLocal.remove()
+        } finally {
+          parentBlockContext = null
         }
+      } else throw new IllegalStateException("BUG in BatchingExecutor.Batch: current batch not null when required")
+
+    @tailrec private[this] final def runAll(): Unit = {
+      val next = pollLast()
+      if (next ne null) {
+        try next.run() catch {
+          case t: Throwable =>
+            _tasksLocal.remove()
+            unbatchedExecute(this) //TODO what if this submission fails?
+            throw t
+         }
         runAll()
-        _tasksLocal.remove()
-      } finally {
-        parentBlockContext = null
       }
     }
 
@@ -86,7 +87,7 @@ private[future] trait BatchingExecutor extends Executor {
       }
 
       // now delegate the blocking to the previous BC
-      require(parentBlockContext ne null)
+      if(parentBlockContext eq null) throw new IllegalStateException("BUG in BatchingExecutor.Batch: parentBlockContext is null")
       parentBlockContext.blockOn(thunk)
     }
   }
@@ -94,11 +95,10 @@ private[future] trait BatchingExecutor extends Executor {
   protected def unbatchedExecute(r: Runnable): Unit
 
   override def execute(runnable: Runnable): Unit = {
-    if (batchable(runnable)) { // If we can batch the runnable
-      _tasksLocal.get match {
-        case null => unbatchedExecute(new Batch(runnable)) // If we aren't in batching mode yet, enqueue batch
-        case some => some.addLast(runnable)
-      }
+    if (batchable(runnable)) {
+      val b = _tasksLocal.get
+      if (b ne null) b.addLast(runnable)
+      else unbatchedExecute(new Batch(runnable)) // If we aren't in batching mode yet, enqueue batch
     } else unbatchedExecute(runnable) // If not batchable, just delegate to underlying
   }
 
