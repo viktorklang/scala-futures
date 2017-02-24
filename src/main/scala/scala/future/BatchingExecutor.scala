@@ -51,7 +51,7 @@ private[future] trait BatchingExecutor extends Executor {
     }
     private[this] var parentBlockContext: BlockContext = _
     // this method runs in the delegate ExecutionContext's thread
-    override final def run(): Unit = BlockContext.usingBlockContext(BlockContext.current)(this)(this)
+    override final def run(): Unit = BlockContext.usingBlockContext(this)(BlockContext.current)(this)
 
     override final def apply(prevBlockContext: BlockContext): Unit =
       if(_tasksLocal.get eq null) {
