@@ -67,9 +67,9 @@ class ImprovedCallbackBenchFun extends CallbackBenchFun {
 
 
 @State(Scope.Benchmark)
-@BenchmarkMode(Array(Mode.SingleShotTime))
+@BenchmarkMode(Array(Mode.Throughput, Mode.AverageTime, Mode.SampleTime, Mode.SingleShotTime))
 @OutputTimeUnit(TimeUnit.NANOSECONDS)
-@Warmup(iterations = 10)
+@Warmup(iterations = 1000)
 @Measurement(iterations = 10000)
 @Fork(1)
 class CallbackBenchmark {
@@ -113,6 +113,10 @@ class CallbackBenchmark {
   @Benchmark
   @OperationsPerInvocation(64)
   final def onComplete_64 = benchFun(64)
+
+  @Benchmark
+  @OperationsPerInvocation(1024)
+  final def onComplete_1024 = benchFun(1024)
 
   @Benchmark
   @OperationsPerInvocation(8192)
