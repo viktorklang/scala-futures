@@ -8,8 +8,9 @@
 
 package scala.future.impl
 
-import scala.concurrent.{ ExecutionContext, CanAwait, OnCompleteRunnable, TimeoutException, ExecutionException }
-import scala.future.Future.InternalCallbackExecutor
+import scala.concurrent.{ ExecutionContext, CanAwait, TimeoutException, ExecutionException }
+import scala.future.OnCompleteRunnable
+import scala.future.Future.{ InternalCallbackExecutor }
 import scala.concurrent.duration.{ Duration, FiniteDuration }
 import scala.annotation.{ tailrec, switch }
 import scala.annotation.unchecked.uncheckedVariance
