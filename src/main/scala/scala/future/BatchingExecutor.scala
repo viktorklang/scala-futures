@@ -41,36 +41,30 @@ import scala.annotation.tailrec
  * WARNING: The underlying Executor's execute-method must not execute the submitted Runnable
  * in the calling thread synchronously. It must enqueue/handoff the Runnable.
  */
-private[future] trait BatchingExecutor extends Executor {
-  private[this] val _tasksLocal = new ThreadLocal[Batch]()
-
+ trait BatchingExecutor extends Executor {
   private final class Batch(size: Int) extends ArrayDeque[Runnable](size) with Runnable with BlockContext with (BlockContext => Unit) {
+    private[this] var parentBlockContext: BlockContext = _
+
     def this(r: Runnable) = {
       this(4)
       addLast(r)
     }
-    private[this] var parentBlockContext: BlockContext = _
+    
     // this method runs in the delegate ExecutionContext's thread
-    override final def run(): Unit = BlockContext.usingBlockContext(this)(BlockContext.current)(this)
+    override final def run(): Unit = BlockContext.usingBlockContext(this)(this)
 
-    override final def apply(prevBlockContext: BlockContext): Unit =
-      if(_tasksLocal.get eq null) {
-        try {
-          parentBlockContext = prevBlockContext
-          _tasksLocal.set(this)
-          runAll()
-          _tasksLocal.remove()
-        } finally {
-          parentBlockContext = null
-        }
-      } else throw new IllegalStateException("BUG in BatchingExecutor.Batch: current batch not null when required")
+    override final def apply(prevBlockContext: BlockContext): Unit = {
+      parentBlockContext = prevBlockContext
+      runAll()
+      parentBlockContext = null
+    }
 
     @tailrec private[this] final def runAll(): Unit = {
       val next = pollLast()
       if (next ne null) {
         try next.run() catch {
           case t: Throwable =>
-            _tasksLocal.remove()
+            parentBlockContext = null // Need to reset this before submitting it
             unbatchedExecute(this) //TODO what if this submission fails?
             throw t
          }
@@ -79,16 +73,17 @@ private[future] trait BatchingExecutor extends Executor {
     }
 
     override def blockOn[T](thunk: => T)(implicit permission: CanAwait): T = {
+      val pbc = parentBlockContext
       if(!isEmpty) { // if we know there will be blocking, we don't want to keep tasks queued up because it could deadlock.
-        val b = new Batch(this.size)
+        val b = new Batch(math.max(4, this.size))
         b.addAll(this)
         this.clear()
         unbatchedExecute(b)
       }
-
-      // now delegate the blocking to the previous BC
-      if(parentBlockContext eq null) throw new IllegalStateException("BUG in BatchingExecutor.Batch: parentBlockContext is null")
-      parentBlockContext.blockOn(thunk)
+      pbc match {
+        case null => try thunk finally throw new IllegalStateException("BUG in BatchingExecutor.Batch: parentBlockContext is null")
+        case some => some.blockOn(thunk) // now delegate the blocking to the previous BC
+      }
     }
   }
 
@@ -96,8 +91,8 @@ private[future] trait BatchingExecutor extends Executor {
 
   override def execute(runnable: Runnable): Unit = {
     if (batchable(runnable)) {
-      val b = _tasksLocal.get
-      if (b ne null) b.addLast(runnable)
+      val b = BlockContext.current
+      if (b.isInstanceOf[Batch]) b.asInstanceOf[Batch].addLast(runnable) // If we're currently executing a Batch then add runnable to current batch
       else unbatchedExecute(new Batch(runnable)) // If we aren't in batching mode yet, enqueue batch
     } else unbatchedExecute(runnable) // If not batchable, just delegate to underlying
   }

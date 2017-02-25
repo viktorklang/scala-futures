@@ -68,32 +68,39 @@ object BlockContext {
 
   private[this] val contextLocal = new ThreadLocal[BlockContext]()
 
-  /**
-    * @return the `BlockContext` that would be used for the calling `java.lang.Thread` currently.
-    **/
-  def current: BlockContext = contextLocal.get match {
-    case null => Thread.currentThread match {
-      case ctx: BlockContext => ctx
-      case _ => DefaultBlockContext
+  private[this] final def prefer(candidate: BlockContext): BlockContext =
+    candidate match {
+      case null => Thread.currentThread match {
+        case ctx: BlockContext => ctx
+        case _ => DefaultBlockContext
+      }
+      case some => some
     }
-    case some => some
-  }
+ 
+  /**
+   * @return the `BlockContext` that would be used for the current `java.lang.Thread` at this point
+   **/
+  def current: BlockContext = prefer(contextLocal.get)
 
   /**
    * Installs a current `BlockContext` around executing `body`.
    **/
   def withBlockContext[T](blockContext: BlockContext)(body: => T): T = {
     val old = contextLocal.get // can be null
-    contextLocal.set(blockContext)
-    try body finally contextLocal.set(old)
+    try {
+      contextLocal.set(blockContext)
+      body
+    } finally {
+      contextLocal.set(old)
+    }
   }
 
   /**
-   * Installs a current `BlockContext` around executing `f` with parameter `input`.
-   **/ //TODO: make public API? Or make `withBlockContext` inline:able?
-  private[future] def usingBlockContext[I, T](blockContext: BlockContext)(input: I)(f: I => T): T = {
+   * Installs the BlockContext `blockContext` around the invocation to `f` and passes in the previously installed BlockContext to `f`.
+   **/ //FIXME make public API for Scala 2.13
+  private[future] final def usingBlockContext[I, T](blockContext: BlockContext)(f: BlockContext => T): T = {
     val old = contextLocal.get // can be null
     contextLocal.set(blockContext)
-    try f(input) finally contextLocal.set(old)
+    try f(prefer(old)) finally contextLocal.set(old)
   }
 }

@@ -17,7 +17,7 @@ abstract class CallbackBenchFun {
   def teardown(): Unit
 }
 
-object StdlibCallbackBenchFun extends CallbackBenchFun {
+class StdlibCallbackBenchFun extends CallbackBenchFun {
   implicit final val ec: stdlib.ExecutionContext = new stdlib.ExecutionContext {
     val g = stdlib.ExecutionContext.global
     override final def execute(r: Runnable) = g.execute(r)
@@ -41,7 +41,7 @@ object StdlibCallbackBenchFun extends CallbackBenchFun {
   }
 }
 
-object ImprovedCallbackBenchFun extends CallbackBenchFun {
+class ImprovedCallbackBenchFun extends CallbackBenchFun {
   implicit final val ec: stdlib.ExecutionContext = new stdlib.ExecutionContext with BatchingExecutor {
     val g = stdlib.ExecutionContext.global
     override final def unbatchedExecute(r: Runnable) = g.execute(r)
@@ -82,8 +82,8 @@ class CallbackBenchmark {
   @Setup(Level.Trial)
   final def startup = {
     benchFun = impl match {
-      case "stdlib" => StdlibCallbackBenchFun
-      case "improved" => ImprovedCallbackBenchFun
+      case "stdlib" => new StdlibCallbackBenchFun
+      case "improved" => new ImprovedCallbackBenchFun
       case other => throw new IllegalArgumentException("impl must be either 'stdlib' or 'improved' but was '" + other + "'")
     }
   }
