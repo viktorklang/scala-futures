@@ -67,8 +67,8 @@ class ImprovedCallbackBenchFun extends CallbackBenchFun {
 
 
 @State(Scope.Benchmark)
-@BenchmarkMode(Array(Mode.Throughput, Mode.AverageTime, Mode.SampleTime, Mode.SingleShotTime))
-@OutputTimeUnit(TimeUnit.NANOSECONDS)
+@BenchmarkMode(Array(Mode.Throughput, Mode.AverageTime))
+@OutputTimeUnit(TimeUnit.MICROSECONDS)
 @Warmup(iterations = 1000)
 @Measurement(iterations = 10000)
 @Fork(1)

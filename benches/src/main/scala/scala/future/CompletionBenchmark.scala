@@ -53,9 +53,9 @@ class ImprovedTryCompleteBenchFun(result: Try[Unit]) extends TryCompleteBenchFun
 
 
 @State(Scope.Benchmark)
-@BenchmarkMode(Array(Mode.SingleShotTime))
-@OutputTimeUnit(TimeUnit.NANOSECONDS)
-@Warmup(iterations = 10)
+@BenchmarkMode(Array(Mode.Throughput, Mode.AverageTime))
+@OutputTimeUnit(TimeUnit.MICROSECONDS)
+@Warmup(iterations = 1000)
 @Measurement(iterations = 10000)
 @Fork(1)
 class CompletionBenchmark {
@@ -108,6 +108,10 @@ class CompletionBenchmark {
   @Benchmark
   @OperationsPerInvocation(64)
   final def tryComplete_64 = benchFun(64)
+
+  @Benchmark
+  @OperationsPerInvocation(1024)
+  final def tryComplete_1024 = benchFun(1024)
 
   @Benchmark
   @OperationsPerInvocation(8192)

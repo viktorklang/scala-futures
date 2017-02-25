@@ -49,6 +49,8 @@ import scala.annotation.tailrec
       this(4)
       addLast(r)
     }
+
+    final def executor: BatchingExecutor = BatchingExecutor.this
     
     // this method runs in the delegate ExecutionContext's thread
     override final def run(): Unit = BlockContext.usingBlockContext(this)(this)
@@ -91,9 +93,10 @@ import scala.annotation.tailrec
 
   override def execute(runnable: Runnable): Unit = {
     if (batchable(runnable)) {
-      val b = BlockContext.current
-      if (b.isInstanceOf[Batch]) b.asInstanceOf[Batch].addLast(runnable) // If we're currently executing a Batch then add runnable to current batch
-      else unbatchedExecute(new Batch(runnable)) // If we aren't in batching mode yet, enqueue batch
+      BlockContext.current match {
+        case b: Batch if b.executor eq this => b.addLast(runnable) // If we're currently executing a Batch then add runnable to current batch
+        case _ => unbatchedExecute(new Batch(runnable)) // If we aren't in batching mode yet, enqueue batch
+      }
     } else unbatchedExecute(runnable) // If not batchable, just delegate to underlying
   }
 
