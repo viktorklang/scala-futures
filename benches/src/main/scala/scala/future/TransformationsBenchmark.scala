@@ -17,11 +17,7 @@ abstract class TransformationBenchFun {
   def teardown(): Unit
 }
 
-final class StdlibTransformationBenchFun(val e: Executor) extends TransformationBenchFun {
-  implicit final val ec: stdlib.ExecutionContext = new stdlib.ExecutionContext {
-    override final def execute(r: Runnable) = e.execute(r)
-    override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
-  }
+final class StdlibTransformationBenchFun(implicit val ec: stdlib.ExecutionContext) extends TransformationBenchFun {
   var p: stdlib.Promise[Result] = _
   final def setup(): Unit = {
     p = stdlib.Promise[Result]
@@ -41,11 +37,7 @@ final class StdlibTransformationBenchFun(val e: Executor) extends Transformation
   }
 }
 
-final class ImprovedTransformationBenchFun(val e: Executor) extends TransformationBenchFun {
-  implicit final val ec: stdlib.ExecutionContext = new stdlib.ExecutionContext with BatchingExecutor {
-    override final def unbatchedExecute(r: Runnable) = e.execute(r)
-    override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
-  }
+final class ImprovedTransformationBenchFun(implicit val ec: stdlib.ExecutionContext) extends TransformationBenchFun {
   var p: improved.Promise[Result] = _
   final def setup(): Unit = {
     p = improved.Promise[Result]
@@ -74,7 +66,7 @@ final class ImprovedTransformationBenchFun(val e: Executor) extends Transformati
 @Fork(1)
 class TransformationBenchmark {
 
-  @Param(Array[String]("stdlib", "improved"))
+  @Param(Array[String]("stdlib", "improved", "improved2"))
   var impl: String = _
 
   var benchFun: TransformationBenchFun = _
@@ -84,8 +76,21 @@ class TransformationBenchmark {
   @Setup(Level.Trial)
   final def startup = {
     benchFun = impl match {
-      case "stdlib" => new StdlibTransformationBenchFun(stdlib.ExecutionContext.global)
-      case "improved" => new ImprovedTransformationBenchFun(stdlib.ExecutionContext.global)
+      case "stdlib" => new StdlibTransformationBenchFun()(new stdlib.ExecutionContext {
+        val g = stdlib.ExecutionContext.global
+        override final def execute(r: Runnable) = g.execute(r)
+        override final def reportFailure(t: Throwable) = g.reportFailure(t)
+      })
+      case "improved" => new ImprovedTransformationBenchFun()(new stdlib.ExecutionContext {
+        val g = stdlib.ExecutionContext.global
+        override final def execute(r: Runnable) = g.execute(r)
+        override final def reportFailure(t: Throwable) = g.reportFailure(t)
+      })
+      case "improved2" => new ImprovedTransformationBenchFun()(new BatchingExecutor with stdlib.ExecutionContext {
+        val g = stdlib.ExecutionContext.global
+        override final def unbatchedExecute(r: Runnable) = g.execute(r)
+        override final def reportFailure(t: Throwable) = g.reportFailure(t)
+      })
       case other => throw new IllegalArgumentException("impl must be either 'stdlib' or 'improved' but was '" + other + "'")
     }
   }

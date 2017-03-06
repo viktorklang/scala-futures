@@ -17,12 +17,7 @@ abstract class CallbackBenchFun {
   def teardown(): Unit
 }
 
-class StdlibCallbackBenchFun extends CallbackBenchFun {
-  implicit final val ec: stdlib.ExecutionContext = new stdlib.ExecutionContext {
-    val g = stdlib.ExecutionContext.global
-    override final def execute(r: Runnable) = g.execute(r)
-    override final def reportFailure(t: Throwable) = g.reportFailure(t)
-  }
+final class StdlibCallbackBenchFun(implicit final val ec: stdlib.ExecutionContext) extends CallbackBenchFun {
   var p: stdlib.Promise[Unit] = _
   final def setup(): Unit = {
     p = stdlib.Promise[Unit]
@@ -41,12 +36,7 @@ class StdlibCallbackBenchFun extends CallbackBenchFun {
   }
 }
 
-class ImprovedCallbackBenchFun extends CallbackBenchFun {
-  implicit final val ec: stdlib.ExecutionContext = new stdlib.ExecutionContext with BatchingExecutor {
-    val g = stdlib.ExecutionContext.global
-    override final def unbatchedExecute(r: Runnable) = g.execute(r)
-    override final def reportFailure(t: Throwable) = g.reportFailure(t)
-  }
+final class ImprovedCallbackBenchFun(implicit final val ec: stdlib.ExecutionContext) extends CallbackBenchFun {
   var p: improved.Promise[Unit] = _
   final def setup(): Unit = {
     p = improved.Promise[Unit]
@@ -65,7 +55,6 @@ class ImprovedCallbackBenchFun extends CallbackBenchFun {
   }
 }
 
-
 @State(Scope.Benchmark)
 @BenchmarkMode(Array(Mode.Throughput, Mode.AverageTime))
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
@@ -74,7 +63,7 @@ class ImprovedCallbackBenchFun extends CallbackBenchFun {
 @Fork(1)
 class CallbackBenchmark {
 
-  @Param(Array[String]("stdlib", "improved"))
+  @Param(Array[String]("stdlib", "improved", "improved2"))
   var impl: String = _
 
   var benchFun: CallbackBenchFun = _
@@ -82,9 +71,22 @@ class CallbackBenchmark {
   @Setup(Level.Trial)
   final def startup = {
     benchFun = impl match {
-      case "stdlib" => new StdlibCallbackBenchFun
-      case "improved" => new ImprovedCallbackBenchFun
-      case other => throw new IllegalArgumentException("impl must be either 'stdlib' or 'improved' but was '" + other + "'")
+      case "stdlib" => new StdlibCallbackBenchFun()(new stdlib.ExecutionContext {
+        val g = stdlib.ExecutionContext.global
+        override final def execute(r: Runnable) = g.execute(r)
+        override final def reportFailure(t: Throwable) = g.reportFailure(t)
+      })
+      case "improved" => new ImprovedCallbackBenchFun()(new stdlib.ExecutionContext {
+        val g = stdlib.ExecutionContext.global
+        override final def execute(r: Runnable) = g.execute(r)
+        override final def reportFailure(t: Throwable) = g.reportFailure(t)
+      })
+      case "improved2" => new ImprovedCallbackBenchFun()(new BatchingExecutor with stdlib.ExecutionContext {
+        val g = stdlib.ExecutionContext.global
+        override final def unbatchedExecute(r: Runnable) = g.execute(r)
+        override final def reportFailure(t: Throwable) = g.reportFailure(t)
+      })
+      case other => throw new IllegalArgumentException("impl must be either 'stdlib', 'improved', or 'improved2' but was '" + other + "'")
     }
   }
 

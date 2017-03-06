@@ -15,7 +15,7 @@ abstract class TryCompleteBenchFun {
   def teardown(): Unit
 }
 
-class StdlibTryCompleteBenchFun(result: Try[Unit]) extends TryCompleteBenchFun {
+final class StdlibTryCompleteBenchFun(result: Try[Unit]) extends TryCompleteBenchFun {
   var p: stdlib.Promise[Unit] = _
   final def setup(): Unit = {
     p = stdlib.Promise[Unit]
@@ -33,7 +33,7 @@ class StdlibTryCompleteBenchFun(result: Try[Unit]) extends TryCompleteBenchFun {
   }
 }
 
-class ImprovedTryCompleteBenchFun(result: Try[Unit]) extends TryCompleteBenchFun {
+final class ImprovedTryCompleteBenchFun(result: Try[Unit]) extends TryCompleteBenchFun {
   var p: improved.Promise[Unit] = _
   final def setup(): Unit = {
     p = improved.Promise[Unit]
@@ -50,7 +50,6 @@ class ImprovedTryCompleteBenchFun(result: Try[Unit]) extends TryCompleteBenchFun
     p = null
   }
 }
-
 
 @State(Scope.Benchmark)
 @BenchmarkMode(Array(Mode.Throughput, Mode.AverageTime))
