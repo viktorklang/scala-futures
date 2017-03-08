@@ -20,52 +20,7 @@ import scala.util.{ Try, Success, Failure }
 import java.util.concurrent.locks.AbstractQueuedSynchronizer
 import java.util.concurrent.atomic.AtomicReference
 
-private[future] trait Promise[T] extends scala.future.Promise[T] with scala.future.Future[T] {
-  def future: this.type = this
-
-  import scala.future.Future
-  import scala.future.impl.Promise.DefaultPromise
-
-  override def transform[S](f: Try[T] => Try[S])(implicit executor: ExecutionContext): Future[S] = {
-    val p = new DefaultPromise[S]()
-    onComplete { result => p.complete(try f(result) catch { case NonFatal(t) => Failure(t) }) }
-    p.future
-  }
-
-  // If possible, link DefaultPromises to avoid space leaks
-  override def transformWith[S](f: Try[T] => Future[S])(implicit executor: ExecutionContext): Future[S] = {
-    val p = new DefaultPromise[S]()
-    onComplete {
-      v => try f(v) match {
-        case fut if fut eq this => p complete v.asInstanceOf[Try[S]]
-        case dp: DefaultPromise[_] => dp.asInstanceOf[DefaultPromise[S]].linkRootOf(p)
-        case fut => p completeWith fut
-      } catch { case NonFatal(t) => p failure t }
-    }
-    p.future
-  }
-
-  override def toString: String = value match {
-    case Some(result) => "Future("+result+")"
-    case None => "Future(<not completed>)"
-  }
-}
-
 private[future] object Promise {
-
-  private final def resolveTry[T](source: Try[T]): Try[T] = source match {
-    case _: Success[_]                                 => source
-    case f @ Failure(throwable) =>
-      throwable match {
-        case t: scala.runtime.NonLocalReturnControl[_] => Success(t.value.asInstanceOf[T])
-        case t: scala.util.control.ControlThrowable    => Failure(new ExecutionException("Boxed ControlThrowable", t))
-        case t: InterruptedException                   => Failure(new ExecutionException("Boxed InterruptedException", t))
-        case e: Error                                  => Failure(new ExecutionException("Boxed Error", e))
-        case _                                         => f
-      }
-    case _                                             => source
-  }
-
   /* Encodes the concept of having callbacks.
    * This is an `abstract class` to make sure calls are `invokevirtual` rather than `invokeinterface`
    */
@@ -79,7 +34,7 @@ private[future] object Promise {
   /* Represents 0 Callbacks, is used as an initial, sentinel, value for DefaultPromise
    * This used to be a `case object` but in order to keep `Callbacks`'s methods bimorphic it was reencoded as `val`
    */
-  val NoopCallback: Callbacks[Nothing] =
+  final val NoopCallback: Callbacks[Nothing] =
     new Callback[Nothing](new ExecutionContext {
       override def execute(r: Runnable): Unit = throw new IllegalStateException("Noop ExecutionContext.execute!")
       override def reportFailure(t: Throwable): Unit = t.printStackTrace(System.err)
@@ -94,21 +49,22 @@ private[future] object Promise {
 
     private[this] var value: Try[T] = null
 
-    override def run(): Unit = value match {
-      case null => throw new IllegalStateException("Callback value must be set when running")
-      case some => try onComplete(some) catch { case NonFatal(e) => executor reportFailure e } finally { value = null }
+    override def run(): Unit = {
+      val v = value
+      if (v ne null) {
+        value = null
+        try onComplete(v) catch { case NonFatal(e) => executor reportFailure e }
+      } else throw new IllegalStateException("Callback value must be set when running")
     }
 
     override def submitWithValue(v: Try[T]): Unit = 
       if (this ne NoopCallback) {
-        value match {
-          case null =>
+        val curValue = value
+        if (curValue eq null) {
             value = v // Safe publication of `value`, to run(), is achieved via `executor.execute(this)`
-            // Note that we cannot prepare the ExecutionContext at this point, since we might
-            // already be running on a different thread!
+            // Note that we cannot prepare the ExecutionContext at this point, since we might already be running on a different thread!
             try executor.execute(this) catch { case NonFatal(t) => executor reportFailure t }
-          case other => throw new IllegalStateException(s"Callback value already set to $other")
-        }
+        } else throw new IllegalStateException(s"Callback value already set to $curValue")
       }
 
     override def prepend[U >: T](c: Callbacks[U]): Callbacks[U] = c match {
@@ -220,6 +176,25 @@ private[future] object Promise {
      override def apply(ignored: Try[T]): Unit = releaseShared(1)
    }
 
+   private final def transformWithDefaultPromise[T, S](that: DefaultPromise[T], f: Try[T] => scala.future.Future[S]): DefaultPromise[S] with (Try[T] => Unit) =
+     new DefaultPromise[S] with (Try[T] => Unit) {
+        private[this] var fun = f
+        private[this] var that2 = that
+        override def apply(v: Try[T]): Unit = 
+          try fun(v) match {
+            case fut if fut eq that => this complete v.asInstanceOf[Try[S]] // TODO is this really needed? Verify.
+            case dp: DefaultPromise[S @unchecked] => dp.linkRootOf(this) // If possible, link DefaultPromises to avoid space leaks
+            case fut => this completeWith fut
+          } catch { case NonFatal(t) => this failure t } finally { fun = null; that2 = null; }
+      }
+
+  private final def transformDefaultPromise[T, S](f: Try[T] => Try[S]): DefaultPromise[S] with (Try[T] => Unit) =
+    new DefaultPromise[S] with (Try[T] => Unit) {
+      private[this] var fun = f
+      override def apply(result: Try[T]): Unit = 
+        this.complete(try fun(result) catch { case NonFatal(t) => Failure(t) } finally { fun = null })
+    }
+
 
   /** Default promise implementation.
    *
@@ -299,7 +274,29 @@ private[future] object Promise {
    */
   // Left non-final to enable addition of extra fields by Java/Scala converters
   // in scala-java8-compat.
-  class DefaultPromise[T] extends AtomicReference[AnyRef](NoopCallback) with Promise[T] {
+  class DefaultPromise[T] private[this](initial: AnyRef) extends AtomicReference[AnyRef](initial) with scala.future.Future[T] with scala.future.Promise[T] {
+
+    private[future] def this(result: Try[T]) = this(result: AnyRef)
+    def this() = this(NoopCallback: AnyRef)
+
+    override def toString: String = value match {
+      case Some(result) => s"Future($result)"
+      case None => "Future(<not completed>)"
+    }
+
+    override def future: this.type = this
+
+    override def transform[S](f: Try[T] => Try[S])(implicit executor: ExecutionContext): scala.future.Future[S] = {
+      val p = transformDefaultPromise(f)
+      this onComplete p
+      p.future
+    }
+
+    override def transformWith[S](f: Try[T] => scala.future.Future[S])(implicit executor: ExecutionContext): scala.future.Future[S] = {
+      val p = transformWithDefaultPromise(this, f)
+      this onComplete p
+      p.future
+    }
 
     /** Get the root promise for this promise, compressing the link chain to that
      *  promise if necessary.
@@ -317,16 +314,16 @@ private[future] object Promise {
      */
     private def compressedRoot(): DefaultPromise[T] =
       get() match {
-        case linked: DefaultPromise[_] => compressedRoot(linked)
+        case linked: DefaultPromise[T @unchecked] => compressedRoot(linked)
         case _ => this
       }
 
     @tailrec
-    private[this] final def compressedRoot(linked: DefaultPromise[_]): DefaultPromise[T] = {
-      val target = linked.asInstanceOf[DefaultPromise[T]].root
+    private[this] final def compressedRoot(linked: DefaultPromise[T]): DefaultPromise[T] = {
+      val target = linked.root
       if ((linked eq target) || compareAndSet(linked, target)) target
       else get() match {
-        case newLinked: DefaultPromise[_] => compressedRoot(newLinked)
+        case newLinked: DefaultPromise[T @unchecked] => compressedRoot(newLinked)
         case _ => this
       }
     }
@@ -338,7 +335,7 @@ private[future] object Promise {
     @tailrec
     private def root: DefaultPromise[T] =
       get() match {
-        case linked: DefaultPromise[_] => linked.asInstanceOf[DefaultPromise[T]].root
+        case linked: DefaultPromise[T @unchecked] => linked.root
         case _ => this
       }
 
@@ -368,43 +365,54 @@ private[future] object Promise {
     @throws(classOf[InterruptedException])
     final def ready(atMost: Duration)(implicit permit: CanAwait): this.type =
       if (tryAwait(atMost)) this
-      else throw new TimeoutException("Futures timed out after [" + atMost + "]")
+      else throw new TimeoutException(s"Futures timed out after [$atMost]")
 
     @throws(classOf[Exception])
     final def result(atMost: Duration)(implicit permit: CanAwait): T =
       ready(atMost).value.get.get // ready throws TimeoutException if timeout so value.get is safe here
 
-    def value: Option[Try[T]] = value0
+    override def value: Option[Try[T]] = value0
 
     @tailrec
     private def value0: Option[Try[T]] = get() match {
-      case c: Try[_]             => Some(c.asInstanceOf[Try[T]])
-      case dp: DefaultPromise[_] => compressedRoot(dp).value0
-      case _: Callbacks[_]       => None
+      case c: Try[T @unchecked]             => Some(c)
+      case dp: DefaultPromise[T @unchecked] => compressedRoot(dp).value0
+      case _: Callbacks[_]                  => None
     }
 
     override final def isCompleted: Boolean = isCompleted0
 
     @tailrec
-    private def isCompleted0: Boolean = get() match {
-      case _: Try[_]             => true
-      case dp: DefaultPromise[_] => compressedRoot(dp).isCompleted0
-      case _: Callbacks[_]       => false
+    private final def isCompleted0: Boolean = get() match {
+      case _: Try[T @unchecked]             => true
+      case dp: DefaultPromise[T @unchecked] => compressedRoot(dp).isCompleted0
+      case _: Callbacks[T @unchecked]       => false
     }
 
-    final def tryComplete(value: Try[T]): Boolean =
-      tryComplete0(resolveTry(value))
+    final def tryComplete(value: Try[T]): Boolean = {
+      tryComplete0( // Code below is an inlined version of "resolveTry", see Kept.apply.
+        if (value.isSuccess) value
+        else value.asInstanceOf[Failure[T]].exception match {
+          case nlrc: scala.runtime.NonLocalReturnControl[T] =>
+            Success(nlrc.value.asInstanceOf[T])
+          case t @ (_: scala.util.control.ControlThrowable | _: InterruptedException | _: Error) =>
+            Failure(new ExecutionException("Boxed Throwable", t))
+          case _ =>
+            value
+        }
+      )
+    }
 
     @tailrec
-    private def tryComplete0(v: Try[T]): Boolean =
+    private final def tryComplete0(v: Try[T]): Boolean =
       get() match {
-        case _: Try[_]             => false
-        case cb: Callbacks[_]      =>
+        case cb: Callbacks[T @unchecked]      =>
           if (compareAndSet(cb, v)) {
-            cb.asInstanceOf[Callbacks[T]].submitWithValue(v)
+            cb.submitWithValue(v)
             true
           } else tryComplete0(v)
-        case dp: DefaultPromise[_] => compressedRoot(dp).tryComplete0(v)
+        case _: Try[_]                        => false
+        case dp: DefaultPromise[T @unchecked] => compressedRoot(dp).tryComplete0(v)
       }
 
     final def onComplete[U](func: Try[T] => U)(implicit executor: ExecutionContext): Unit =
@@ -417,10 +425,10 @@ private[future] object Promise {
     @tailrec
     private def dispatchOrAddCallbacks(c: Callbacks[T]): Unit =
         get() match {
-          case r: Try[_]             => c.submitWithValue(r.asInstanceOf[Try[T]])
-          case dp: DefaultPromise[_] => compressedRoot(dp).dispatchOrAddCallbacks(c)
-          case cb: Callbacks[_]      => if (compareAndSet(cb, cb.prepend(c))) ()
-                                        else dispatchOrAddCallbacks(c)
+          case cb: Callbacks[_]                 => if (compareAndSet(cb, cb.prepend(c))) ()
+                                                   else dispatchOrAddCallbacks(c)
+          case r: Try[T @unchecked]             => c.submitWithValue(r)
+          case dp: DefaultPromise[T @unchecked] => compressedRoot(dp).dispatchOrAddCallbacks(c)
         }
 
     /** Link this promise to the root of another promise using `link()`. Should only be
@@ -440,13 +448,13 @@ private[future] object Promise {
     @tailrec
     private def link(target: DefaultPromise[T]): Unit = if (this ne target) {
       get() match {
-        case r: Try[_] =>
-          if (!target.tryComplete(r.asInstanceOf[Try[T]]))
+        case r: Try[T @unchecked] =>
+          if (!target.tryComplete(r))
             throw new IllegalStateException("Cannot link completed promises together")
-        case dp: DefaultPromise[_] => compressedRoot(dp).link(target)
-        case cb: Callbacks[_] =>
-          if (compareAndSet(cb, target)) target.dispatchOrAddCallbacks(cb.asInstanceOf[Callbacks[T]])
+        case cb: Callbacks[T @unchecked] =>
+          if (compareAndSet(cb, target)) target.dispatchOrAddCallbacks(cb)
           else link(target)
+        case dp: DefaultPromise[T @unchecked] => compressedRoot(dp).link(target)
       }
     }
   }
@@ -455,52 +463,18 @@ private[future] object Promise {
    *
    *  Useful in Future-composition when a value to contribute is already available.
    */
-  object KeptPromise {
-    import scala.future.Future
-    import scala.reflect.ClassTag
-
-    private[this] sealed abstract class Kept[T] extends Promise[T] {
-      def result: Try[T]
-      override def value: Option[Try[T]] = Some(result)
-      override def isCompleted: Boolean = true
-      override def tryComplete(value: Try[T]): Boolean = false
-      override def onComplete[U](func: Try[T] => U)(implicit executor: ExecutionContext): Unit =
-        (new Callback(executor.prepare(), func)).submitWithValue(result)
-      override def ready(atMost: Duration)(implicit permit: CanAwait): this.type = this
-      override def result(atMost: Duration)(implicit permit: CanAwait): T = result.get
-    }
-
-    private[this] final class Successful[T](val result: Success[T]) extends Kept[T] {
-      override def onFailure[U](pf: PartialFunction[Throwable, U])(implicit executor: ExecutionContext): Unit = ()
-      override def failed: Future[Throwable] = KeptPromise(Failure(new NoSuchElementException("Future.failed not completed with a throwable."))).future
-      override def recover[U >: T](pf: PartialFunction[Throwable, U])(implicit executor: ExecutionContext): Future[U] = this
-      override def recoverWith[U >: T](pf: PartialFunction[Throwable, Future[U]])(implicit executor: ExecutionContext): Future[U] = this
-      override def fallbackTo[U >: T](that: Future[U]): Future[U] = this
-    }
-
-    private[this] final class Failed[T](val result: Failure[T]) extends Kept[T] {
-      private[this] final def thisAs[S]: Future[S] = future.asInstanceOf[Future[S]]
-
-      override def onSuccess[U](pf: PartialFunction[T, U])(implicit executor: ExecutionContext): Unit = ()
-      override def failed: Future[Throwable] = KeptPromise(Success(result.exception)).future
-      override def foreach[U](f: T => U)(implicit executor: ExecutionContext): Unit = ()
-      override def map[S](f: T => S)(implicit executor: ExecutionContext): Future[S] = thisAs[S]
-      override def flatMap[S](f: T => Future[S])(implicit executor: ExecutionContext): Future[S] = thisAs[S]
-      override def flatten[S](implicit ev: T <:< Future[S]): Future[S] = thisAs[S]
-      override def filter(p: T => Boolean)(implicit executor: ExecutionContext): Future[T] = this
-      override def collect[S](pf: PartialFunction[T, S])(implicit executor: ExecutionContext): Future[S] = thisAs[S]
-      override def zip[U](that: Future[U]): Future[(T, U)] = thisAs[(T,U)]
-      override def zipWith[U, R](that: Future[U])(f: (T, U) => R)(implicit executor: ExecutionContext): Future[R] = thisAs[R]
-      override def fallbackTo[U >: T](that: Future[U]): Future[U] =
-        if (this eq that) this else that.recoverWith({ case _ => this })(InternalCallbackExecutor)
-      override def mapTo[S](implicit tag: ClassTag[S]): Future[S] = thisAs[S]
-    }
-
+  object Kept {
     def apply[T](result: Try[T]): scala.future.Promise[T] =
-      resolveTry(result) match {
-        case s @ Success(_) => new Successful(s)
-        case f @ Failure(_) => new Failed(f)
-      }
+      if (result.isSuccess)
+        new DefaultPromise(result)
+      else
+        new DefaultPromise(result.asInstanceOf[Failure[T]].exception match {
+            case nlrc: scala.runtime.NonLocalReturnControl[T @unchecked] =>
+                      Success(nlrc.value.asInstanceOf[T])
+            case t @ (_: scala.util.control.ControlThrowable | _: InterruptedException | _: Error) =>
+                      Failure(new ExecutionException("Boxed Throwable", t))
+            case _ => result
+          }
+        )
   }
-
 }

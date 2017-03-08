@@ -30,7 +30,7 @@ final class StdlibTransformationBenchFun(implicit val ec: stdlib.ExecutionContex
       i -= 1
     }
     p.success("stlib")
-    p.future
+    cf
   }
   final def teardown(): Unit = {
     p = null
@@ -50,7 +50,7 @@ final class ImprovedTransformationBenchFun(implicit val ec: stdlib.ExecutionCont
       i -= 1
     }
     p.success("improved")
-    p.future
+    cf
   }
   final def teardown(): Unit = {
     p = null
@@ -63,40 +63,61 @@ final class ImprovedTransformationBenchFun(implicit val ec: stdlib.ExecutionCont
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
 @Warmup(iterations = 1000)
 @Measurement(iterations = 10000)
-@Fork(1)
+@Fork(value = 1, jvmArgsAppend = Array("-ea","-server","-XX:+UseCompressedOops","-XX:+AggressiveOpts","-XX:+AlwaysPreTouch", "-XX:+UseCondCardMark"))
 class TransformationBenchmark {
 
   @Param(Array[String]("stdlib", "improved", "improved2"))
   var impl: String = _
 
+  @Param(Array[String]("fjp(1)", "fjp(cores)", "fix(1)", "fix(cores)"))
+  var pool: String = _
+
   var benchFun: TransformationBenchFun = _
+
+  var executor: Executor = _
 
   val timeout = 60.seconds
 
   @Setup(Level.Trial)
-  final def startup = {
+  final def startup: Unit = {
+    val cores = java.lang.Runtime.getRuntime.availableProcessors
+    executor = pool match {
+      case "fjp(1)"     => new java.util.concurrent.ForkJoinPool(1)
+      case "fjp(cores)" => new java.util.concurrent.ForkJoinPool(cores)
+      case "fix(1)"     => java.util.concurrent.Executors.newFixedThreadPool(1)
+      case "fix(cores)" => java.util.concurrent.Executors.newFixedThreadPool(cores)
+    }
+
     benchFun = impl match {
       case "stdlib" => new StdlibTransformationBenchFun()(new stdlib.ExecutionContext {
-        val g = stdlib.ExecutionContext.global
+        val g = executor
         override final def execute(r: Runnable) = g.execute(r)
-        override final def reportFailure(t: Throwable) = g.reportFailure(t)
+        override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
       })
       case "improved" => new ImprovedTransformationBenchFun()(new stdlib.ExecutionContext {
-        val g = stdlib.ExecutionContext.global
+        val g = executor
         override final def execute(r: Runnable) = g.execute(r)
-        override final def reportFailure(t: Throwable) = g.reportFailure(t)
+        override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
       })
       case "improved2" => new ImprovedTransformationBenchFun()(new BatchingExecutor with stdlib.ExecutionContext {
-        val g = stdlib.ExecutionContext.global
+        val g = executor
         override final def unbatchedExecute(r: Runnable) = g.execute(r)
-        override final def reportFailure(t: Throwable) = g.reportFailure(t)
+        override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
       })
-      case other => throw new IllegalArgumentException("impl must be either 'stdlib' or 'improved' but was '" + other + "'")
+      case other => throw new IllegalArgumentException(s"impl was '$other'")
     }
   }
 
   @TearDown(Level.Trial)
-  final def shutdown: Unit = ()
+  final def shutdown: Unit = {
+    executor = executor match {
+      case es: ExecutorService =>
+        es.shutdown()
+        es.awaitTermination(1, TimeUnit.MINUTES)
+        null
+      case _ => null
+    }
+  }
 
   @TearDown(Level.Invocation)
   final def teardown = benchFun.teardown()

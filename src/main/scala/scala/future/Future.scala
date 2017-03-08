@@ -218,7 +218,7 @@ trait Future[+T] extends Awaitable[T] {
    */
   def transform[S](s: T => S, f: Throwable => Throwable)(implicit executor: ExecutionContext): Future[S] =
     transform {
-      case Success(r) => Try(s(r))
+      case Success(r) => Success(s(r))
       case Failure(t) => Failure(f(t)) // will throw fatal errors!
     }
 

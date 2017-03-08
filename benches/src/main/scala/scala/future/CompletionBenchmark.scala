@@ -15,7 +15,7 @@ abstract class TryCompleteBenchFun {
   def teardown(): Unit
 }
 
-final class StdlibTryCompleteBenchFun(result: Try[Unit]) extends TryCompleteBenchFun {
+final class StdlibTryCompleteBenchFun(val result: Try[Unit]) extends TryCompleteBenchFun {
   var p: stdlib.Promise[Unit] = _
   final def setup(): Unit = {
     p = stdlib.Promise[Unit]
@@ -33,7 +33,7 @@ final class StdlibTryCompleteBenchFun(result: Try[Unit]) extends TryCompleteBenc
   }
 }
 
-final class ImprovedTryCompleteBenchFun(result: Try[Unit]) extends TryCompleteBenchFun {
+final class ImprovedTryCompleteBenchFun(val result: Try[Unit]) extends TryCompleteBenchFun {
   var p: improved.Promise[Unit] = _
   final def setup(): Unit = {
     p = improved.Promise[Unit]
@@ -70,8 +70,8 @@ class CompletionBenchmark {
   @Setup(Level.Trial)
   final def startup = {
     val r = result match {
-      case "success" => Try(())
-      case "failure" => Try(throw new RuntimeException("expected failure"))
+      case "success" => scala.util.Success(())
+      case "failure" => scala.util.Failure(new RuntimeException("expected failure"))
       case other => throw new IllegalArgumentException("result must be either 'success' or 'failure' but was '" + other + "'")
     }
 

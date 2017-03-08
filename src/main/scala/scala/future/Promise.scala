@@ -135,5 +135,5 @@ object Promise {
    *  @tparam T       the type of the value in the promise
    *  @return         the newly created `Promise` object
    */
-  def fromTry[T](result: Try[T]): Promise[T] = impl.Promise.KeptPromise[T](result)
+  def fromTry[T](result: Try[T]): Promise[T] = impl.Promise.Kept[T](result)
 }

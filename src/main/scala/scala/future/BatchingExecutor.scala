@@ -66,7 +66,7 @@ import scala.annotation.tailrec
       if (next ne null) {
         try next.run() catch {
           case t: Throwable =>
-            parentBlockContext = null // Need to reset this before submitting it
+            parentBlockContext = null // Need to reset this before re-submitting it
             unbatchedExecute(this) //TODO what if this submission fails?
             throw t
          }
