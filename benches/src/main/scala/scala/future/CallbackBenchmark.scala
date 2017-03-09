@@ -4,7 +4,7 @@ import scala.concurrent.duration._
 import java.util.concurrent.TimeUnit
 import org.openjdk.jmh.annotations._
 import scala.util.Try
-
+import java.util.concurrent.{TimeUnit,Executor, ExecutorService}
 import scala.{concurrent => stdlib}
 import scala.{future => improved}
 
@@ -60,33 +60,58 @@ final class ImprovedCallbackBenchFun(implicit final val ec: stdlib.ExecutionCont
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
 @Warmup(iterations = 1000)
 @Measurement(iterations = 10000)
-@Fork(1)
+@Fork(value = 1, jvmArgsAppend = Array("-ea","-server","-XX:+UseCompressedOops","-XX:+AggressiveOpts","-XX:+AlwaysPreTouch", "-XX:+UseCondCardMark"))
 class CallbackBenchmark {
 
   @Param(Array[String]("stdlib", "improved", "improved2"))
   var impl: String = _
 
+  @Param(Array[String]("fjp(1)", "fjp(cores)", "fix(1)", "fix(cores)"))
+  var pool: String = _
+
+  var executor: Executor = _
+
   var benchFun: CallbackBenchFun = _
 
   @Setup(Level.Trial)
   final def startup = {
+
+    val cores = java.lang.Runtime.getRuntime.availableProcessors
+    executor = pool match {
+      case "fjp(1)"     => new java.util.concurrent.ForkJoinPool(1)
+      case "fjp(cores)" => new java.util.concurrent.ForkJoinPool(cores)
+      case "fix(1)"     => java.util.concurrent.Executors.newFixedThreadPool(1)
+      case "fix(cores)" => java.util.concurrent.Executors.newFixedThreadPool(cores)
+    }
+
     benchFun = impl match {
       case "stdlib" => new StdlibCallbackBenchFun()(new stdlib.ExecutionContext {
-        val g = stdlib.ExecutionContext.global
+        val g = executor
         override final def execute(r: Runnable) = g.execute(r)
-        override final def reportFailure(t: Throwable) = g.reportFailure(t)
+        override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
       })
       case "improved" => new ImprovedCallbackBenchFun()(new stdlib.ExecutionContext {
-        val g = stdlib.ExecutionContext.global
+        val g = executor
         override final def execute(r: Runnable) = g.execute(r)
-        override final def reportFailure(t: Throwable) = g.reportFailure(t)
+        override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
       })
       case "improved2" => new ImprovedCallbackBenchFun()(new BatchingExecutor with stdlib.ExecutionContext {
-        val g = stdlib.ExecutionContext.global
+        val g = executor
         override final def unbatchedExecute(r: Runnable) = g.execute(r)
-        override final def reportFailure(t: Throwable) = g.reportFailure(t)
+        override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
       })
       case other => throw new IllegalArgumentException("impl must be either 'stdlib', 'improved', or 'improved2' but was '" + other + "'")
+    }
+  }
+
+  @TearDown(Level.Trial)
+  final def shutdown: Unit = {
+    executor = executor match {
+      case es: ExecutorService =>
+        es.shutdown()
+        es.awaitTermination(1, TimeUnit.MINUTES)
+        null
+      case _ => null
     }
   }
 

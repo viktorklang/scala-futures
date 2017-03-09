@@ -56,7 +56,7 @@ final class ImprovedTryCompleteBenchFun(val result: Try[Unit]) extends TryComple
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
 @Warmup(iterations = 1000)
 @Measurement(iterations = 10000)
-@Fork(1)
+@Fork(value = 1, jvmArgsAppend = Array("-ea","-server","-XX:+UseCompressedOops","-XX:+AggressiveOpts","-XX:+AlwaysPreTouch", "-XX:+UseCondCardMark"))
 class CompletionBenchmark {
 
   @Param(Array[String]("stdlib", "improved"))
