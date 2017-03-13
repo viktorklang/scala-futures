@@ -66,7 +66,7 @@ class CallbackBenchmark {
   @Param(Array[String]("stdlib", "improved", "improved2"))
   var impl: String = _
 
-  @Param(Array[String]("fjp(1)", "fjp(cores)", "fix(1)", "fix(cores)", "direct"))
+  @Param(Array[String]("fjp(1)", "fjp(cores)", "fix(1)", "fix(cores)"/*, "direct"*/))
   var pool: String = _
 
   var executor: Executor = _
@@ -82,7 +82,7 @@ class CallbackBenchmark {
       case "fjp(cores)" => new java.util.concurrent.ForkJoinPool(cores)
       case "fix(1)"     => java.util.concurrent.Executors.newFixedThreadPool(1)
       case "fix(cores)" => java.util.concurrent.Executors.newFixedThreadPool(cores)
-      case "direct"     => scala.future.Future.InternalCallbackExecutor
+      //case "direct"     => scala.future.Future.InternalCallbackExecutor
     }
 
     benchFun = impl match {
@@ -101,7 +101,7 @@ class CallbackBenchmark {
         override final def unbatchedExecute(r: Runnable) = g.execute(r)
         override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
       })
-      case other => throw new IllegalArgumentException("impl must be either 'stdlib', 'improved', or 'improved2' but was '" + other + "'")
+      case other => throw new IllegalArgumentException(s"impl must be either 'stdlib', 'improved', or 'improved2' but was '$other'")
     }
   }
 

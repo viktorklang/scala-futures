@@ -69,7 +69,7 @@ class TransformationBenchmark {
   @Param(Array[String]("stdlib", "improved", "improved2"))
   var impl: String = _
 
-  @Param(Array[String]("fjp(1)", "fjp(cores)", "fix(1)", "fix(cores)", "direct"))
+  @Param(Array[String]("fjp(1)", "fjp(cores)", "fix(1)", "fix(cores)"/*, "direct"*/))
   var pool: String = _
 
   var benchFun: TransformationBenchFun = _
@@ -86,7 +86,7 @@ class TransformationBenchmark {
       case "fjp(cores)" => new java.util.concurrent.ForkJoinPool(cores)
       case "fix(1)"     => java.util.concurrent.Executors.newFixedThreadPool(1)
       case "fix(cores)" => java.util.concurrent.Executors.newFixedThreadPool(cores)
-      case "direct"     => scala.future.Future.InternalCallbackExecutor
+      //case "direct"     => scala.future.Future.InternalCallbackExecutor
     }
 
     benchFun = impl match {
