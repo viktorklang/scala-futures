@@ -109,9 +109,7 @@ trait Future[+T] extends Awaitable[T] {
    */
   @deprecated("use `foreach` or `onComplete` instead (keep in mind that they take total rather than partial functions)", "2.12")
   def onSuccess[U](pf: PartialFunction[T, U])(implicit executor: ExecutionContext): Unit = onComplete {
-    case Success(v) =>
-      pf.applyOrElse[T, Any](v, Predef.conforms[T]) // Exploiting the cached function to avoid MatchError
-    case _ =>
+    t => if (t.isInstanceOf[Success[T]]) pf.applyOrElse[T, Any](t.asInstanceOf[Success[T]].value, Future.id[T])
   }
 
   /** When this future is completed with a failure (i.e., with a throwable),
@@ -130,9 +128,7 @@ trait Future[+T] extends Awaitable[T] {
    */
   @deprecated("use `onComplete` or `failed.foreach` instead (keep in mind that they take total rather than partial functions)", "2.12")
   def onFailure[U](@deprecatedName('callback) pf: PartialFunction[Throwable, U])(implicit executor: ExecutionContext): Unit = onComplete {
-    case Failure(t) =>
-      pf.applyOrElse[Throwable, Any](t, Predef.conforms[Throwable]) // Exploiting the cached function to avoid MatchError
-    case _ =>
+    t => if (t.isInstanceOf[Failure[T]]) pf.applyOrElse[Throwable, Any](t.asInstanceOf[Failure[T]].exception, Future.id[Throwable])
   }
 
   /** When this future is completed, either through an exception, or a value,
@@ -186,10 +182,10 @@ trait Future[+T] extends Awaitable[T] {
    * @return a failed projection of this `Future`.
    */
   def failed: Future[Throwable] =
-    transform({
-      case Failure(t) => Success(t)
-      case Success(v) => Failure(new NoSuchElementException("Future.failed not completed with a throwable."))
-    })(internalExecutor)
+    transform(
+      t => if (t.isInstanceOf[Failure[T]]) Success(t.asInstanceOf[Failure[T]].exception)
+           else                            Failure(new NoSuchElementException("Future.failed not completed with a throwable."))
+    )(internalExecutor)
 
 
   /* Monadic operations */
@@ -218,8 +214,7 @@ trait Future[+T] extends Awaitable[T] {
    */
   def transform[S](s: T => S, f: Throwable => Throwable)(implicit executor: ExecutionContext): Future[S] =
     transform {
-      case Success(r) => Success(s(r))
-      case Failure(t) => Failure(f(t)) // will throw fatal errors!
+      t => if (t.isInstanceOf[Success[T]]) Success(s(t.asInstanceOf[Success[T]].value)) else Failure(f(t.asInstanceOf[Failure[T]].exception)) // will throw fatal errors!
     }
 
   /** Creates a new Future by applying the specified function to the result
@@ -263,7 +258,9 @@ trait Future[+T] extends Awaitable[T] {
    *  @param f   the function which will be applied to the successful result of this `Future`
    *  @return    a `Future` which will be completed with the result of the application of the function
    */
-  def map[S](f: T => S)(implicit executor: ExecutionContext): Future[S] = transform(_.map(f))
+  def map[S](f: T => S)(implicit executor: ExecutionContext): Future[S] = transform {
+    t => if (t.isInstanceOf[Success[T]]) Success[S](f(t.asInstanceOf[Success[T]].value)) else t.asInstanceOf[Failure[S]]
+  }
 
   /** Creates a new future by applying a function to the successful result of
    *  this future, and returns the result of the function as the new future.
@@ -277,8 +274,7 @@ trait Future[+T] extends Awaitable[T] {
    *  @return    a `Future` which will be completed with the result of the application of the function
    */
   def flatMap[S](f: T => Future[S])(implicit executor: ExecutionContext): Future[S] = transformWith {
-    case Success(s) => f(s)
-    case Failure(_) => this.asInstanceOf[Future[S]]
+    t => if (t.isInstanceOf[Success[T]]) f(t.asInstanceOf[Success[T]].value) else this.asInstanceOf[Future[S]]
   }
 
   /** Creates a new future with one level of nesting flattened, this method is equivalent
@@ -339,9 +335,7 @@ trait Future[+T] extends Awaitable[T] {
    *  @return      a `Future` holding the result of application of the `PartialFunction` or a `NoSuchElementException`
    */
   def collect[S](pf: PartialFunction[T, S])(implicit executor: ExecutionContext): Future[S] =
-    map {
-      r => pf.applyOrElse(r, (t: T) => throw new NoSuchElementException("Future.collect partial function is not defined at: " + t))
-    }
+    map { r => pf.applyOrElse(r, Future.collectFailed) }
 
   /** Creates a new future that will handle any matching throwable that this
    *  future might contain. If there is no match, or if this future contains
@@ -381,8 +375,7 @@ trait Future[+T] extends Awaitable[T] {
    */
   def recoverWith[U >: T](pf: PartialFunction[Throwable, Future[U]])(implicit executor: ExecutionContext): Future[U] =
     transformWith {
-      case Failure(t) => pf.applyOrElse(t, (_: Throwable) => this)
-      case Success(_) => this
+      t => if (t.isInstanceOf[Failure[T]]) pf.applyOrElse(t.asInstanceOf[Failure[T]].exception, (_: Throwable) => this) else this
     }
 
   /** Zips the values of `this` and `that` future, and creates
@@ -491,7 +484,7 @@ trait Future[+T] extends Awaitable[T] {
   def andThen[U](pf: PartialFunction[Try[T], U])(implicit executor: ExecutionContext): Future[T] =
     transform {
       result =>
-        try pf.applyOrElse[Try[T], Any](result, Predef.conforms[Try[T]])
+        try pf.applyOrElse[Try[T], Any](result, Future.id[Try[T]])
         catch { case NonFatal(t) => executor reportFailure t }
 
         result
@@ -505,7 +498,7 @@ trait Future[+T] extends Awaitable[T] {
  *  @define nonDeterministic
  *  Note: using this method yields nondeterministic dataflow programs.
  */
-object Future {
+final object Future {
 
   private[future] val toBoxed = Map[Class[_], Class[_]](
     classOf[Boolean] -> classOf[java.lang.Boolean],
@@ -518,6 +511,17 @@ object Future {
     classOf[Double]  -> classOf[java.lang.Double],
     classOf[Unit]    -> classOf[scala.runtime.BoxedUnit]
   )
+  /*
+   * Caching this function instance.
+   */
+  private[future] final val collectFailed: Any => Nothing =
+    t => throw new NoSuchElementException("Future.collect partial function is not defined for input value")
+
+  /*
+   * Caching the identity function becaus Predef.identity doesn't
+   */
+  private[this] final val _id: Any => Any = x => x
+  private[future] final def id[T]: T => T = _id.asInstanceOf[T => T]
 
   /** A Future which is never completed.
    */
@@ -817,10 +821,8 @@ object Future {
   // doesn't need to create defaultExecutionContext as
   // a side effect.
   private[future] object InternalCallbackExecutor extends ExecutionContext with BatchingExecutor {
-    override protected def unbatchedExecute(r: Runnable): Unit =
-      r.run()
-    override def reportFailure(t: Throwable): Unit =
-      throw new IllegalStateException("problem in scala.concurrent internal callback", t)
+    override protected def unbatchedExecute(r: Runnable): Unit = r.run()
+    override def reportFailure(t: Throwable): Unit = throw new IllegalStateException("problem in scala.concurrent internal callback", t)
   }
 }
 

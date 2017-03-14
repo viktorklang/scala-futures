@@ -20,7 +20,7 @@ import scala.util.{ Try, Success, Failure }
 import java.util.concurrent.locks.AbstractQueuedSynchronizer
 import java.util.concurrent.atomic.AtomicReference
 
-private[future] object Promise {
+private[future] final object Promise {
   /* Encodes the concept of having callbacks.
    * This is an `abstract class` to make sure calls are `invokevirtual` rather than `invokeinterface`
    */
@@ -44,12 +44,12 @@ private[future] object Promise {
   /* Represents a single Callback function.
      Precondition: `executor` is prepar()-ed */
   final class Callback[T](
-    val executor: ExecutionContext,
-    val onComplete: Try[T] => Any) extends Callbacks[T] with Runnable with OnCompleteRunnable {
+    final val executor: ExecutionContext,
+    final val onComplete: Try[T] => Any) extends Callbacks[T] with Runnable with OnCompleteRunnable {
 
-    private[this] var value: Try[T] = null
+    private[this] final var value: Try[T] = _
 
-    override def run(): Unit = {
+    override final def run(): Unit = {
       val v = value
       if (v ne null) {
         value = null
@@ -57,7 +57,7 @@ private[future] object Promise {
       } else throw new IllegalStateException("Callback value must be set when running")
     }
 
-    override def submitWithValue(v: Try[T]): Unit = 
+    override final def submitWithValue(v: Try[T]): Unit = 
       if (this ne NoopCallback) {
         val curValue = value
         if (curValue eq null) {
@@ -67,7 +67,7 @@ private[future] object Promise {
         } else throw new IllegalStateException(s"Callback value already set to $curValue")
       }
 
-    override def prepend[U >: T](c: Callbacks[U]): Callbacks[U] = c match {
+    override final def prepend[U >: T](c: Callbacks[U]): Callbacks[U] = c match {
       case a: Callback[U] =>
         if (a eq NoopCallback) this
         else if (this eq NoopCallback) a
@@ -176,16 +176,14 @@ private[future] object Promise {
      override def apply(ignored: Try[T]): Unit = releaseShared(1)
    }
 
-   private final def transformWithDefaultPromise[T, S](that: DefaultPromise[T], f: Try[T] => scala.future.Future[S]): DefaultPromise[S] with (Try[T] => Unit) =
+   private final def transformWithDefaultPromise[T, S](f: Try[T] => scala.future.Future[S]): DefaultPromise[S] with (Try[T] => Unit) =
      new DefaultPromise[S] with (Try[T] => Unit) {
         private[this] var fun = f
-        private[this] var that2 = that
         override def apply(v: Try[T]): Unit = 
           try fun(v) match {
-            case fut if fut eq that => this complete v.asInstanceOf[Try[S]] // TODO is this really needed? Verify.
             case dp: DefaultPromise[S @unchecked] => dp.linkRootOf(this) // If possible, link DefaultPromises to avoid space leaks
             case fut => this completeWith fut
-          } catch { case NonFatal(t) => this failure t } finally { fun = null; that2 = null; }
+          } catch { case NonFatal(t) => this failure t } finally { fun = null }
       }
 
   private final def transformDefaultPromise[T, S](f: Try[T] => Try[S]): DefaultPromise[S] with (Try[T] => Unit) =
@@ -256,11 +254,11 @@ private[future] object Promise {
    *
    * To mitigate the problem of the root promise changing, whenever a promise's
    * methods are called, and it needs a reference to its root promise it calls
-   * the `compressedRoot()` method. This method re-scans the promise chain to
+   * the `compressRoot()` method. This method re-scans the promise chain to
    * get the root promise, and also compresses its links so that it links
    * directly to whatever the current root promise is. This ensures that the
-   * chain is flattened whenever `compressedRoot()` is called. And since
-   * `compressedRoot()` is called at every possible opportunity (when getting a
+   * chain is flattened whenever `compressRoot()` is called. And since
+   * `compressRoot()` is called at every possible opportunity (when getting a
    * promise's value, when adding an onComplete handler, etc), this will happen
    * frequently. Unfortunately, even this eager relinking doesn't absolutely
    * guarantee that the chain will be flattened and that leaks cannot occur.
@@ -293,7 +291,7 @@ private[future] object Promise {
     }
 
     override def transformWith[S](f: Try[T] => scala.future.Future[S])(implicit executor: ExecutionContext): scala.future.Future[S] = {
-      val p = transformWithDefaultPromise(this, f)
+      val p = transformWithDefaultPromise(f)
       this onComplete p
       p.future
     }
@@ -302,7 +300,7 @@ private[future] object Promise {
      *  promise if necessary.
      *
      *  For promises that are not linked, the result of calling
-     *  `compressedRoot()` will the promise itself. However for linked promises,
+     *  `compressRoot()` will the input promise itself. However for linked promises,
      *  this method will traverse each link until it locates the root promise at
      *  the base of the link chain.
      *
@@ -312,32 +310,20 @@ private[future] object Promise {
      *  be garbage collected. Also, subsequent calls to this method should be
      *  faster as the link chain will be shorter.
      */
-    private def compressedRoot(): DefaultPromise[T] =
-      get() match {
-        case linked: DefaultPromise[T @unchecked] => compressedRoot(linked)
-        case _ => this
-      }
-
     @tailrec
-    private[this] final def compressedRoot(linked: DefaultPromise[T]): DefaultPromise[T] = {
-      val target = linked.root
-      if ((linked eq target) || compareAndSet(linked, target)) target
-      else get() match {
-        case newLinked: DefaultPromise[T @unchecked] => compressedRoot(newLinked)
-        case _ => this
-      }
-    }
-
-    /** Get the promise at the root of the chain of linked promises. Used by `compressedRoot()`.
-     *  The `compressedRoot()` method should be called instead of this method, as it is important
+    private[this] final def compressRoot(linked: DefaultPromise[T]): DefaultPromise[T] = {
+      /** Get the promise at the root of the chain of linked promises. Used by `compressRoot()`.
+     *  The `compressRoot()` method should be called instead of this method, as it is important
      *  to compress the link chain whenever possible.
      */
-    @tailrec
-    private def root: DefaultPromise[T] =
-      get() match {
-        case linked: DefaultPromise[T @unchecked] => linked.root
-        case _ => this
+      @tailrec def rootOf(dp: DefaultPromise[T]): DefaultPromise[T] = dp.get match {
+         case linked: DefaultPromise[T @unchecked] => rootOf(linked)
+         case _ => dp
       }
+      val target = rootOf(linked)
+      if ((linked eq target) || compareAndSet(linked, target)) target
+      else compressRoot(this)
+    }
 
     /** Try waiting for this promise to be completed.
      */
@@ -376,7 +362,7 @@ private[future] object Promise {
     @tailrec
     private def value0: Option[Try[T]] = get() match {
       case c: Try[T @unchecked]             => Some(c)
-      case dp: DefaultPromise[T @unchecked] => compressedRoot(dp).value0
+      case dp: DefaultPromise[T @unchecked] => compressRoot(dp).value0
       case _: Callbacks[_]                  => None
     }
 
@@ -385,13 +371,13 @@ private[future] object Promise {
     @tailrec
     private final def isCompleted0: Boolean = get() match {
       case _: Try[T @unchecked]             => true
-      case dp: DefaultPromise[T @unchecked] => compressedRoot(dp).isCompleted0
+      case dp: DefaultPromise[T @unchecked] => compressRoot(dp).isCompleted0
       case _: Callbacks[T @unchecked]       => false
     }
 
     final def tryComplete(value: Try[T]): Boolean = {
       tryComplete0( // Code below is an inlined version of "resolveTry", see Kept.apply.
-        if (value.isSuccess) value
+        if (value.isInstanceOf[Success[T]]) value
         else value.asInstanceOf[Failure[T]].exception match {
           case nlrc: scala.runtime.NonLocalReturnControl[T] =>
             Success(nlrc.value.asInstanceOf[T])
@@ -412,7 +398,7 @@ private[future] object Promise {
             true
           } else tryComplete0(v)
         case _: Try[_]                        => false
-        case dp: DefaultPromise[T @unchecked] => compressedRoot(dp).tryComplete0(v)
+        case dp: DefaultPromise[T @unchecked] => compressRoot(dp).tryComplete0(v)
       }
 
     final def onComplete[U](func: Try[T] => U)(implicit executor: ExecutionContext): Unit =
@@ -428,13 +414,13 @@ private[future] object Promise {
           case cb: Callbacks[_]                 => if (compareAndSet(cb, cb.prepend(c))) ()
                                                    else dispatchOrAddCallbacks(c)
           case r: Try[T @unchecked]             => c.submitWithValue(r)
-          case dp: DefaultPromise[T @unchecked] => compressedRoot(dp).dispatchOrAddCallbacks(c)
+          case dp: DefaultPromise[T @unchecked] => compressRoot(dp).dispatchOrAddCallbacks(c)
         }
 
     /** Link this promise to the root of another promise using `link()`. Should only be
      *  be called by transformWith.
      */
-    protected[future] final def linkRootOf(target: DefaultPromise[T]): Unit = link(target.compressedRoot())
+    protected[future] final def linkRootOf(target: DefaultPromise[T]): Unit = link(compressRoot(target))
 
     /** Link this promise to another promise so that both promises share the same
      *  externally-visible state. Depending on the current state of this promise, this
@@ -454,7 +440,7 @@ private[future] object Promise {
         case cb: Callbacks[T @unchecked] =>
           if (compareAndSet(cb, target)) target.dispatchOrAddCallbacks(cb)
           else link(target)
-        case dp: DefaultPromise[T @unchecked] => compressedRoot(dp).link(target)
+        case dp: DefaultPromise[T @unchecked] => compressRoot(dp).link(target)
       }
     }
   }
