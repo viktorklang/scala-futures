@@ -61,7 +61,7 @@ final class ImprovedTryCompleteWithBenchFun(final val v: Try[Unit]) extends TryC
 }
 
 @State(Scope.Benchmark)
-@BenchmarkMode(Array(Mode.Throughput, Mode.AverageTime))
+@BenchmarkMode(Array(Mode.Throughput, Mode.SampleTime))
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
 @Warmup(iterations = 1000)
 @Measurement(iterations = 10000)
