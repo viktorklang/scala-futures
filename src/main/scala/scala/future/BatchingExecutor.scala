@@ -94,7 +94,7 @@ import scala.annotation.tailrec
   override def execute(runnable: Runnable): Unit = {
     if (batchable(runnable)) {
       BlockContext.current match {
-        case b: Batch if b.executor eq this => b.addLast(runnable) // If we're currently executing a Batch then add runnable to current batch
+        case b: BatchingExecutor#Batch if b.executor eq this => b.addLast(runnable) // If we're currently executing a Batch then add runnable to current batch
         case _ => unbatchedExecute(new Batch(runnable)) // If we aren't in batching mode yet, enqueue batch
       }
     } else unbatchedExecute(runnable) // If not batchable, just delegate to underlying

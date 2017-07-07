@@ -44,27 +44,29 @@ private[future] final object Promise {
   /* Represents a single Callback function.
      Precondition: `executor` is prepar()-ed */
   final class Callback[T](
-    final val executor: ExecutionContext,
+    executor: ExecutionContext,
     final val onComplete: Try[T] => Any) extends Callbacks[T] with Runnable with OnCompleteRunnable {
 
-    private[this] final var value: Try[T] = _
+    private[this] final var value: AnyRef = executor // value is initially the EC
 
-    override final def run(): Unit = {
-      val v = value
-      if (v ne null) {
+    override final def run(): Unit = value match {
+      case v: Try[T] =>
         value = null
         try onComplete(v) catch { case NonFatal(e) => executor reportFailure e }
-      } else throw new IllegalStateException("Callback value must be set when running")
+      case _ =>
+        throw new IllegalStateException("Callback value must be set when running")
     }
 
     override final def submitWithValue(v: Try[T]): Unit = 
       if (this ne NoopCallback) {
-        val curValue = value
-        if (curValue eq null) {
+        value match {
+          case ec: ExecutionContext =>
             value = v // Safe publication of `value`, to run(), is achieved via `executor.execute(this)`
-            // Note that we cannot prepare the ExecutionContext at this point, since we might already be running on a different thread!
-            try executor.execute(this) catch { case NonFatal(t) => executor reportFailure t }
-        } else throw new IllegalStateException(s"Callback value already set to $curValue")
+            // Note that we cannot prepare the ExecutionContext at this point, since we might already be running on a different thread!            
+            try ec.execute(this) catch { case NonFatal(t) => ec reportFailure t }
+          case curValue =>
+            throw new IllegalStateException("Callback didn't have an ExecutionContext: " + curValue)
+        }
       }
 
     override final def prepend[U >: T](c: Callbacks[U]): Callbacks[U] = c match {
@@ -87,11 +89,11 @@ private[future] final object Promise {
       new ManyCallbacks[U](fourth, third, second, first, 0)
   }
   final class ManyCallbacks[+T] private[ManyCallbacks] (
-    val c1: Callbacks[T],
-    val c2: Callbacks[T],
-    val c3: Callbacks[T],
-    val c4: Callbacks[T],
-    private[ManyCallbacks] val remainingCapacity: Int) extends Callbacks[T] {
+    final val c1: Callbacks[T],
+    final val c2: Callbacks[T],
+    final val c3: Callbacks[T],
+    final val c4: Callbacks[T],
+    private[ManyCallbacks] final val remainingCapacity: Int) extends Callbacks[T] {
 
     //Don't want to incur the runtime ovehead of these checks, but this invariant will hold true:
     //require(c3 ne NoopCallback)
