@@ -13,31 +13,37 @@ import scala.future.Future.InternalCallbackExecutor
 import scala.concurrent.duration.{ Duration, FiniteDuration }
 import scala.annotation.{ tailrec, switch, unchecked }
 import scala.annotation.unchecked.uncheckedVariance
-import scala.util.control.NonFatal
+import scala.util.control.{ NonFatal, ControlThrowable }
 import scala.util.{ Try, Success, Failure }
+import scala.runtime.NonLocalReturnControl
 
 import java.util.concurrent.locks.AbstractQueuedSynchronizer
 import java.util.concurrent.atomic.AtomicReference
+import java.util.Objects.requireNonNull
 
 private[future] final object Promise {
-  private[this] final def executionFailure[T](msg: String, cause: Throwable): Failure[T] =
-    Failure(new ExecutionException(msg, cause))
+  private final def resolveFailure[T](f: Failure[T]): Try[T] = {
+    requireNonNull(f)
+    val t = f.exception
+    if (t.isInstanceOf[NonLocalReturnControl[T @unchecked]])
+      Success(t.asInstanceOf[NonLocalReturnControl[T]].value)
+    else if (t.isInstanceOf[ControlThrowable]
+            || t.isInstanceOf[InterruptedException]
+            || t.isInstanceOf[Error])
+      Failure(new ExecutionException("Boxed Exception", t)) 
+    else
+      f
+  }
 
-  private[this] final def resolveFailure[T](f: Failure[T]): Try[T] =
-    f.exception match {
-      case t: scala.runtime.NonLocalReturnControl[T @unchecked] => Success(t.value)
-      case t: scala.util.control.ControlThrowable    => executionFailure("Boxed ControlThrowable", t)
-      case t: InterruptedException                   => executionFailure("Boxed InterruptedException", t)
-      case e: Error                                  => executionFailure("Boxed Error", e)
-      case _                                         => f
-    }
+  private final def resolveSuccess[T](s: Success[T]): Try[T] = 
+    requireNonNull(s)
 
   private final def resolveTry[T](source: Try[T]): Try[T] = 
-    source match {
-      case null                     => throw new IllegalArgumentException("Cannot complete a Promise with `null`")
-      case f: Failure[T @unchecked] => resolveFailure(f)
-      case _                        => source
-    }
+    if (source.isInstanceOf[Success[T]])
+      resolveSuccess(source.asInstanceOf[Success[T]])
+    else
+      resolveFailure(source.asInstanceOf[Failure[T]])
+      
 
   final def transformWithDefaultPromise[T, S](f: Try[T] => Future[S]): DefaultPromise[S] with (Try[T] => Unit) =
    new DefaultPromise[S] with (Try[T] => Unit) {
@@ -172,6 +178,16 @@ private[future] final object Promise {
      * Constructs a new, completed, Promise.
      */
     def this(result: Try[T]) = this(resolveTry(result): AnyRef)
+
+    /**
+     * Constructs a new, completed, Promise.
+     */
+    def this(success: Success[T]) = this(resolveSuccess(success): AnyRef)
+
+    /**
+     * Constructs a new, completed, Promise.
+     */
+    def this(failure: Failure[T]) = this(resolveFailure(failure): AnyRef)
 
     /**
      * Returns the associaed `Future` with this `Promise`
@@ -395,15 +411,7 @@ private[future] final object Promise {
     }
   }
 
-  /** An already completed Future is given its result at creation.
-   *
-   *  Useful in Future-composition when a value to contribute is already available.
-   */
-  final object KeptPromise {
-    final def apply[T](result: Try[T]): scala.future.Promise[T] = new DefaultPromise(result)
-  }
-
-    /* Encodes the concept of having callbacks.
+  /* Encodes the concept of having callbacks.
    * This is an `abstract class` to make sure calls are `invokevirtual` rather than `invokeinterface`
    */
   sealed abstract class Callbacks[+T] {
