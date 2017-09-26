@@ -109,7 +109,7 @@ class CompletionWithBenchmark {
 
   @Benchmark
   @OperationsPerInvocation(4)
-  final def tryCompleteWith_4 = stdlib.Await.ready(benchFun(3), timeout)
+  final def tryCompleteWith_4 = stdlib.Await.ready(benchFun(4), timeout)
 
   @Benchmark
   @OperationsPerInvocation(16)

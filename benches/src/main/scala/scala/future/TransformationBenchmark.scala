@@ -69,8 +69,11 @@ class TransformationBenchmark {
   @Param(Array[String]("stdlib", "improved", "improved2"))
   var impl: String = _
 
-  @Param(Array[String]("fjp(1)", "fjp(cores)", "fix(1)", "fix(cores)"/*, "direct"*/))
+  @Param(Array[String]("fjp", "fix"))
   var pool: String = _
+
+  @Param(Array[String]("1"))
+  var threads: Int = _
 
   var benchFun: TransformationBenchFun = _
 
@@ -80,13 +83,9 @@ class TransformationBenchmark {
 
   @Setup(Level.Trial)
   final def startup: Unit = {
-    val cores = java.lang.Runtime.getRuntime.availableProcessors
     executor = pool match {
-      case "fjp(1)"     => new java.util.concurrent.ForkJoinPool(1)
-      case "fjp(cores)" => new java.util.concurrent.ForkJoinPool(cores)
-      case "fix(1)"     => java.util.concurrent.Executors.newFixedThreadPool(1)
-      case "fix(cores)" => java.util.concurrent.Executors.newFixedThreadPool(cores)
-      //case "direct"     => scala.future.Future.InternalCallbackExecutor
+      case "fjp" => new java.util.concurrent.ForkJoinPool(threads)
+      case "fix" => java.util.concurrent.Executors.newFixedThreadPool(threads)
     }
 
     benchFun = impl match {
@@ -136,7 +135,7 @@ class TransformationBenchmark {
 
   @Benchmark
   @OperationsPerInvocation(4)
-  final def transformation_4 = stdlib.Await.result(benchFun(3), timeout)
+  final def transformation_4 = stdlib.Await.result(benchFun(4), timeout)
 
   @Benchmark
   @OperationsPerInvocation(16)

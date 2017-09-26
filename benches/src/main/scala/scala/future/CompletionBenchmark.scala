@@ -98,7 +98,7 @@ class CompletionBenchmark {
 
   @Benchmark
   @OperationsPerInvocation(4)
-  final def tryComplete_4 = benchFun(3)
+  final def tryComplete_4 = benchFun(4)
 
   @Benchmark
   @OperationsPerInvocation(16)
