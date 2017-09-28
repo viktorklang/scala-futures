@@ -56,7 +56,7 @@ final class ImprovedCallbackBenchFun(implicit final val ec: stdlib.ExecutionCont
 }
 
 @State(Scope.Benchmark)
-@BenchmarkMode(Array(Mode.Throughput, Mode.SampleTime))
+@BenchmarkMode(Array(Mode.Throughput))
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
 @Warmup(iterations = 1000)
 @Measurement(iterations = 10000)

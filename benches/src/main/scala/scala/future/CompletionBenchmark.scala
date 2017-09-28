@@ -52,7 +52,7 @@ final class ImprovedTryCompleteBenchFun(val result: Try[Unit]) extends TryComple
 }
 
 @State(Scope.Benchmark)
-@BenchmarkMode(Array(Mode.Throughput, Mode.SampleTime))
+@BenchmarkMode(Array(Mode.Throughput))
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
 @Warmup(iterations = 1000)
 @Measurement(iterations = 10000)
