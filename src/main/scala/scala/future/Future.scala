@@ -9,7 +9,6 @@
 package scala.future
 
 import scala.language.higherKinds
-
 import scala.concurrent.{ExecutionContext, Awaitable, CanAwait}
 
 import java.util.concurrent.{CountDownLatch, TimeUnit, TimeoutException}

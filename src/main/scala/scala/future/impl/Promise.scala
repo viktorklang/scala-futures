@@ -20,6 +20,8 @@ import scala.language.higherKinds
 import java.util.concurrent.locks.AbstractQueuedSynchronizer
 import java.util.concurrent.atomic.AtomicReference
 import java.util.Objects.requireNonNull
+
+
 private[future] final object Promise {
    private final def resolveFailure[T](f: Failure[T]): Try[T] = {
     requireNonNull(f)
@@ -165,8 +167,7 @@ private[future] final object Promise {
    * DefaultPromises, and `linkedRootOf` is currently only designed to be called
    * by Future.flatMap.
    */
-  // Left non-final to enable addition of extra fields by Java/Scala converters
-  // in scala-java8-compat.
+  // Left non-final to enable addition of extra fields by Java/Scala converters in scala-java8-compat.
   class DefaultPromise[T] private[this] (init: AnyRef) extends AtomicReference[AnyRef](init) with scala.future.Promise[T] with scala.future.Future[T] {
 
     /**
@@ -195,13 +196,13 @@ private[future] final object Promise {
     override def future: Future[T] = this
 
     override def transform[S](f: Try[T] => Try[S])(implicit executor: ExecutionContext): Future[S] = {
-      val p = new TransformationalPromise(f, executor)
+      val p = new TransformationalPromise(f, executor.prepare())
       dispatchOrAddCallbacks(p)
       p.future
     }
 
     override def transformWith[S](f: Try[T] => Future[S])(implicit executor: ExecutionContext): Future[S] = {
-      val p = new TransformationalPromise(f, executor)
+      val p = new TransformationalPromise(f, executor.prepare())
       dispatchOrAddCallbacks(p)
       p.future
     }
@@ -311,7 +312,7 @@ private[future] final object Promise {
     override final def tryComplete(value: Try[T]): Boolean = {
       val r = resolveTry(value)
       val completed = tryComplete0(r)
-      if (completed) { // TODO: figure out an ecoding which makes the clearing op cheaper
+      if (completed) { // TODO: figure out an encoding which makes the clearing op cheaper
         val state = get()
         if (state.isInstanceOf[Link[T]])
           compareAndSet(state, r) // The Link has served its purpose now and we can clear it out
@@ -331,9 +332,8 @@ private[future] final object Promise {
       else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].promise().tryComplete0(v)
       else /*if (state.isInstanceOf[Try[T]])*/ false
     }
-
     override final def onComplete[U](func: Try[T] => U)(implicit executor: ExecutionContext): Unit =
-      dispatchOrAddCallbacks(new TransformationalPromise[T,({type Id[a] = a})#Id,U](func, executor))
+      dispatchOrAddCallbacks(new TransformationalPromise[T,({type Id[a] = a})#Id,U](func, executor.prepare()))
 
     /** Tries to add the callback, if already completed, it dispatches the callback to be executed.
      *  Used by `onComplete()` to add callbacks to a promise and by `link()` to transfer callbacks
@@ -382,37 +382,43 @@ private[future] final object Promise {
   }
 
   final class TransformationalPromise[F, M[_], T](f: Try[F] => M[T], ec: ExecutionContext) extends DefaultPromise[T]() with Callbacks[F] with Runnable with OnCompleteRunnable {
-    private[this] final var _ec: ExecutionContext = ec.prepare()
-    private[this] final var _in: Try[F] = _
-    private[this] final var _fun: Try[F] => M[T] = f
+    private[this] final var _arg: AnyRef = ec // Is first the EC (needs to be pre-prepared) -> then the value -> then null
+    private[this] final var _fun: Try[F] => M[T] = f // Is first the transformation function -> then null
 
     override final def prepend[U >: F](c: Callbacks[U]): Callbacks[U] =
       if (c.isInstanceOf[ManyCallbacks[U]]) c.asInstanceOf[ManyCallbacks[U]].append(this: Callbacks[F])
-      else if (c eq NoopCallback) this
+      else if (c eq Promise.NoopCallback) this
       else ManyCallbacks.two(c, this)
 
+    // Gets invoked when a value is available, schedules it to be run():ed by the ExecutionContext
     override def submitWithValue(v: Try[F @uncheckedVariance]): Unit = {
-      val executor = _ec
-      _in = v
-      try executor.execute(this) catch { case NonFatal(t) => executor reportFailure t } finally { _ec = null }
+      val a = _arg
+      if (a.isInstanceOf[ExecutionContext]) {
+        val executor = a.asInstanceOf[ExecutionContext]
+        _arg = v
+        try executor.execute(this) catch { case NonFatal(t) => executor reportFailure t }
+      }
     }
 
-    private[this] final def execute(v: Try[F], fn: Try[F] => M[T]): Unit = {
+    // Gets invoked by run(), runs the transformation and stores the result
+    private[this] final def transform(v: Try[F], fn: Try[F] => M[T]): Unit = {
       val res = fn(v)
       if (res.isInstanceOf[Try[T @unchecked]]) this complete res.asInstanceOf[Try[T]]
       else if (res.isInstanceOf[DefaultPromise[T @unchecked]]) res.asInstanceOf[DefaultPromise[T]].linkRootOf(this)
       else if (res.isInstanceOf[Future[T @unchecked]]) this completeWith res.asInstanceOf[Future[T]]
       else this success res.asInstanceOf[T]
-    } 
+    }
 
+    // Gets invoked by the ExecutionContext, when we have a value to transform
     override final def run(): Unit = {
-      val v = _in
-      val fun = _fun
-      try execute(v, fun) catch {
-        case NonFatal(t) => this failure t
-      } finally {
+      val v = _arg
+      _arg = null
+      if (v.isInstanceOf[Try[F]]) {
+        val fun = _fun
         _fun = null
-        _in = null
+        try transform(v.asInstanceOf[Try[F]], fun) catch {
+          case NonFatal(t) => this failure t
+        }
       }
     }
 
