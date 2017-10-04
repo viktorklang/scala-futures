@@ -20,7 +20,6 @@ import scala.concurrent.duration._
 import scala.collection.generic.CanBuildFrom
 import scala.reflect.ClassTag
 
-
 /** A `Future` represents a value which may or may not *currently* be available,
  *  but will be available at some point, or an exception if that value could not be made available.
  *
@@ -139,7 +138,7 @@ trait Future[+T] extends Awaitable[T] {
    */
   @deprecated("use `onComplete` or `failed.foreach` instead (keep in mind that they take total rather than partial functions)", "2.12.0")
   def onFailure[U](@deprecatedName('callback) pf: PartialFunction[Throwable, U])(implicit executor: ExecutionContext): Unit = onComplete {
-      t => if(t.isFailure) pf.applyOrElse[Throwable, Any](t.asInstanceOf[Failure[_]].exception, Future.id[Throwable])
+      t => if(t.isInstanceOf[Failure[T]]) pf.applyOrElse[Throwable, Any](t.asInstanceOf[Failure[T]].exception, Future.id[Throwable])
   }
 
   /** When this future is completed, either through an exception, or a value,
@@ -302,7 +301,7 @@ trait Future[+T] extends Awaitable[T] {
   def flatMap[S](f: T => Future[S])(implicit executor: ExecutionContext): Future[S] = transformWith {
     t => 
       if(t.isInstanceOf[Success[T]]) f(t.asInstanceOf[Success[T]].value)
-      else Future.coerce(this) // Safe cast
+      else this.asInstanceOf[Future[S]] // Safe cast
   }
 
   /** Creates a new future with one level of nesting flattened, this method is equivalent
@@ -377,7 +376,7 @@ trait Future[+T] extends Awaitable[T] {
       t =>
         if (t.isInstanceOf[Success[T]])
           Success(pf.applyOrElse(t.asInstanceOf[Success[T]].value, Future.collectFailed))
-        else Future.coerce(t)
+        else t.asInstanceOf[Failure[S]]
     }
 
   /** Creates a new future that will handle any matching throwable that this
@@ -581,8 +580,6 @@ object Future {
 
   private[future] final def id[T]: T => T = _cachedId.asInstanceOf[T => T]
 
-  private[future] final def coerce[F[_],A,B](f: F[A]): F[B] = f.asInstanceOf[F[B]]
-
   private[future] final val collectFailed =
     (t: Any) => throw new NoSuchElementException("Future.collect partial function is not defined at: " + t) with NoStackTrace
 
@@ -597,6 +594,9 @@ object Future {
 
   private[future] final val recoverWithFailed =
     (t: Throwable) => recoverWithFailedMarker
+
+  private[future] final def firstCompletedOfException =
+    new NoSuchElementException("Future.firstCompletedOf empty collection")
 
   private[this] final val _zipWithTuple2: (Any, Any) => (Any, Any) = Tuple2.apply _
   private[future] final def zipWithTuple2[T,U] = _zipWithTuple2.asInstanceOf[(T,U) => (T,U)]
@@ -699,7 +699,7 @@ object Future {
   def apply[T](body: =>T)(implicit @deprecatedName('execctx) executor: ExecutionContext): Future[T] =
     unit.transform {
       r => if (r.isInstanceOf[Success[T @unchecked]]) Success(body)
-           else Future.coerce(r)
+           else r.asInstanceOf[Failure[T]]
     }
 
   /** Simple version of `Future.traverse`. Asynchronously and non-blockingly transforms a `TraversableOnce[Future[A]]`
@@ -723,10 +723,12 @@ object Future {
    * @param futures   the `TraversableOnce` of Futures in which to find the first completed
    * @return          the `Future` holding the result of the future that is first to be completed
    */
-  def firstCompletedOf[T](futures: TraversableOnce[Future[T]])(implicit executor: ExecutionContext): Future[T] = {
+  def firstCompletedOf[T](futures: TraversableOnce[Future[T]])(implicit executor: ExecutionContext): Future[T] =
+    if (futures.isEmpty) Future.failed[T](Future.firstCompletedOfException)
+    else {
     val p = Promise[T]()
     val completeFirst: Try[T] => Unit = p tryComplete _
-    futures foreach { _ onComplete completeFirst }
+    futures.foreach(_ onComplete completeFirst)
     p.future
   }
 

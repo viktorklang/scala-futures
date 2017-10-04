@@ -23,28 +23,6 @@ import java.util.Objects.requireNonNull
 
 
 private[future] final object Promise {
-   private final def resolveFailure[T](f: Failure[T]): Try[T] = {
-    requireNonNull(f)
-    val t = f.exception
-    if (t.isInstanceOf[NonLocalReturnControl[T @unchecked]])
-      Success(t.asInstanceOf[NonLocalReturnControl[T]].value)
-    else if (t.isInstanceOf[ControlThrowable]
-            || t.isInstanceOf[InterruptedException]
-            || t.isInstanceOf[Error])
-      Failure(new ExecutionException("Boxed Exception", t)) 
-    else
-      f
-  }
-
-  private final def resolveSuccess[T](s: Success[T]): Try[T] = 
-    requireNonNull(s)
-
-  private final def resolveTry[T](source: Try[T]): Try[T] = 
-    if (source.isInstanceOf[Success[T]])
-      resolveSuccess(source.asInstanceOf[Success[T]])
-    else
-      resolveFailure(source.asInstanceOf[Failure[T]])
-
    /**
     * Latch used to implement waiting on a DefaultPromise's result.
     *
@@ -168,27 +146,14 @@ private[future] final object Promise {
    * by Future.flatMap.
    */
   // Left non-final to enable addition of extra fields by Java/Scala converters in scala-java8-compat.
-  class DefaultPromise[T] private[this] (init: AnyRef) extends AtomicReference[AnyRef](init) with scala.future.Promise[T] with scala.future.Future[T] {
-
-    /**
-     * Constructs a new, uncompleted, Promise.
-     */
-    def this() = this(NoopCallback: AnyRef)
-
+  class DefaultPromise[T] extends AtomicReference[AnyRef](NoopCallback: AnyRef) with scala.future.Promise[T] with scala.future.Future[T] {
     /**
      * Constructs a new, completed, Promise.
      */
-    def this(result: Try[T]) = this(resolveTry(result): AnyRef)
-
-    /**
-     * Constructs a new, completed, Promise.
-     */
-    def this(success: Success[T]) = this(resolveSuccess(success): AnyRef)
-
-    /**
-     * Constructs a new, completed, Promise.
-     */
-    def this(failure: Failure[T]) = this(resolveFailure(failure): AnyRef)
+    def this(result: Try[T]) = {
+      this()
+      set(resolve(result))
+    }
 
     /**
      * Returns the associaed `Future` with this `Promise`
@@ -206,6 +171,8 @@ private[future] final object Promise {
       dispatchOrAddCallbacks(p)
       p.future
     }
+
+    @inline private[this] final def coerce[F[_],A,B](f: F[A]): F[B] = f.asInstanceOf[F[B]]
 
     private[this] final def failureOrUnknown: Boolean = {
       val v = value0
@@ -228,37 +195,37 @@ private[future] final object Promise {
 
     override def flatMap[S](f: T => Future[S])(implicit executor: ExecutionContext): Future[S] = 
       if (successOrUnknown) super[Future].flatMap(f)
-      else Future.coerce(this)
+      else coerce(this)
 
     override def map[S](f: T => S)(implicit executor: ExecutionContext): Future[S] =
       if (successOrUnknown) super[Future].map(f)
-      else Future.coerce(this)
+      else coerce(this)
 
     override def filter(@deprecatedName('pred) p: T => Boolean)(implicit executor: ExecutionContext): Future[T] =
       if (successOrUnknown) super[Future].filter(p)
-      else Future.coerce(this)
+      else coerce(this)
 
     override def collect[S](pf: PartialFunction[T, S])(implicit executor: ExecutionContext): Future[S] =
       if (successOrUnknown) super[Future].collect(pf)
-      else Future.coerce(this)
+      else coerce(this)
 
     override def recoverWith[U >: T](pf: PartialFunction[Throwable, Future[U]])(implicit executor: ExecutionContext): Future[U] =
       if (failureOrUnknown) super[Future].recoverWith(pf)
-      else Future.coerce(this)
+      else coerce(this)
 
     override def recover[U >: T](pf: PartialFunction[Throwable, U])(implicit executor: ExecutionContext): Future[U] =
       if (failureOrUnknown) super[Future].recover(pf)
-      else Future.coerce(this)
+      else coerce(this)
 
     override def mapTo[S](implicit tag: scala.reflect.ClassTag[S]): Future[S] =
       if (successOrUnknown) super[Future].mapTo[S](tag)
-      else Future.coerce(this)
+      else coerce(this)
 
     override def toString: String = toString0
 
     @tailrec private final def toString0: String = {
       val state = get()
-      if (state.isInstanceOf[Try[T]]) s"Future($state)"
+      if (state.isInstanceOf[Try[T]]) "Future("+state+")"
       else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].promise().toString0
       else /*if (state.isInstanceOf[Callbacks[T]]) */ "Future(<not completed>)"
     }
@@ -309,29 +276,34 @@ private[future] final object Promise {
       else /*if (state.isInstanceOf[Callbacks[T]])*/ null
     }
 
-    override final def tryComplete(value: Try[T]): Boolean = {
-      val r = resolveTry(value)
-      val completed = tryComplete0(r)
-      if (completed) { // TODO: figure out an encoding which makes the clearing op cheaper
-        val state = get()
-        if (state.isInstanceOf[Link[T]])
-          compareAndSet(state, r) // The Link has served its purpose now and we can clear it out
+    private[this] final def resolve(value: Try[T]): Try[T] =
+      if (requireNonNull(value).isInstanceOf[Success[T]]) value
+      else {
+        val t = value.asInstanceOf[Failure[T]].exception
+        if (t.isInstanceOf[ControlThrowable] || t.isInstanceOf[InterruptedException] || t.isInstanceOf[Error]) {
+          if (t.isInstanceOf[NonLocalReturnControl[T @unchecked]])
+            Success(t.asInstanceOf[NonLocalReturnControl[T]].value)
+          else
+            Failure(new ExecutionException("Boxed Exception", t))
+        } else value
       }
-      completed
-    }
+
+    override final def tryComplete(value: Try[T]): Boolean =
+      tryComplete0(resolve(value))
 
     @tailrec
     private final def tryComplete0(v: Try[T]): Boolean = {
       val state = get()
       if (state.isInstanceOf[Callbacks[T]]) {
         if (compareAndSet(state, v)) {
-          state.asInstanceOf[Callbacks[T]].submitWithValue(v)
+          submitWithValue(state.asInstanceOf[Callbacks[T]], v)
           true
         } else tryComplete0(v)
       }
       else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].promise().tryComplete0(v)
       else /*if (state.isInstanceOf[Try[T]])*/ false
     }
+
     override final def onComplete[U](func: Try[T] => U)(implicit executor: ExecutionContext): Unit =
       dispatchOrAddCallbacks(new TransformationalPromise[T,({type Id[a] = a})#Id,U](func, executor.prepare()))
 
@@ -341,13 +313,24 @@ private[future] final object Promise {
      */
     @tailrec private final def dispatchOrAddCallbacks(callbacks: Callbacks[T]): Unit = {
       val state = get()
-      if (state.isInstanceOf[Try[T]]) callbacks.submitWithValue(state.asInstanceOf[Try[T]])
-      else if (state.isInstanceOf[Link[T]])
-        state.asInstanceOf[Link[T]].promise().dispatchOrAddCallbacks(callbacks)
-      else /*if (state.isInstanceOf[Callbacks[T]])*/ {
+      if (state.isInstanceOf[Try[T]]) submitWithValue(callbacks, state.asInstanceOf[Try[T]])
+      else if (state.isInstanceOf[Callbacks[T]]) {
         if(compareAndSet(state, state.asInstanceOf[Callbacks[T]] prepend callbacks)) ()
         else dispatchOrAddCallbacks(callbacks)
-      }
+      } else /*if (state.isInstanceOf[Link[T]])*/
+        state.asInstanceOf[Link[T]].promise().dispatchOrAddCallbacks(callbacks)
+    }
+
+    private[this] final def submitWithValue(c: Callbacks[T], v: Try[T]): Unit = {
+       if (c.isInstanceOf[TransformationalPromise[T,({type Id[a] = a})#Id,_]])
+         c.asInstanceOf[TransformationalPromise[T,({type Id[a] = a})#Id,_]].submitWithValue(v)
+       else if (c.isInstanceOf[ManyCallbacks[T]]) {
+         val m = c.asInstanceOf[ManyCallbacks[T]]
+         submitWithValue(m.c1, v)
+         submitWithValue(m.c2, v)
+         submitWithValue(m.c3, v)
+         submitWithValue(m.c4, v)
+       }
     }
 
     /** Link this promise to the root of another promise using `link()`. Should only be
@@ -374,7 +357,7 @@ private[future] final object Promise {
             throw new IllegalStateException("Cannot link completed promises together")
         } else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].link(promise)
         else /*if (state.isInstanceOf[Callbacks[T]]) */ {
-          if (compareAndSet(state, target)) target.promise().dispatchOrAddCallbacks(state.asInstanceOf[Callbacks[T]])
+          if (compareAndSet(state, target)) promise.dispatchOrAddCallbacks(state.asInstanceOf[Callbacks[T]])
           else link(target)
         }
       }
@@ -388,10 +371,10 @@ private[future] final object Promise {
     override final def prepend[U >: F](c: Callbacks[U]): Callbacks[U] =
       if (c.isInstanceOf[ManyCallbacks[U]]) c.asInstanceOf[ManyCallbacks[U]].append(this: Callbacks[F])
       else if (c eq Promise.NoopCallback) this
-      else ManyCallbacks.two(c, this)
+      else new ManyCallbacks(c, this)
 
     // Gets invoked when a value is available, schedules it to be run():ed by the ExecutionContext
-    override def submitWithValue(v: Try[F @uncheckedVariance]): Unit = {
+    final def submitWithValue(v: Try[F @uncheckedVariance]): Unit = {
       val a = _arg
       if (a.isInstanceOf[ExecutionContext]) {
         val executor = a.asInstanceOf[ExecutionContext]
@@ -431,25 +414,14 @@ private[future] final object Promise {
   sealed trait Callbacks[+T] {
     /* Logically prepends the callback `c` onto `this` callback */
     def prepend[U >: T](c: Callbacks[U]): Callbacks[U]
-    /* Submits the callback function(s) represented by this Callback to be executed with the given value `v` */
-    def submitWithValue(v: Try[T @uncheckedVariance]): Unit
   }
 
   /* Represents 0 Callbacks, is used as an initial, sentinel, value for DefaultPromise
    * This used to be a `case object` but in order to keep `Callbacks`'s methods bimorphic it was reencoded as `val`
    */
   final object NoopCallback extends Callbacks[Nothing] {
-    override def prepend[U >: Nothing](c: Callbacks[U]): Callbacks[U] = c 
-    override def submitWithValue(v: Try[Nothing @uncheckedVariance]): Unit = ()
-  }
-
-  final object ManyCallbacks {
-    final def two[U](second: Callbacks[U], first: Callbacks[U]): ManyCallbacks[U] =
-      new ManyCallbacks[U](NoopCallback, NoopCallback, second, first, 2)
-    final def three[U](third: Callbacks[U], second: Callbacks[U], first: Callbacks[U]): ManyCallbacks[U] =
-      new ManyCallbacks[U](NoopCallback, third, second, first, 1)
-    final def four[U](fourth: Callbacks[U], third: Callbacks[U], second: Callbacks[U], first: Callbacks[U]): ManyCallbacks[U] =
-      new ManyCallbacks[U](fourth, third, second, first, 0)
+    override def prepend[U >: Nothing](c: Callbacks[U]): Callbacks[U] = c
+    override def toString: String = "Noop"
   }
 
   final class ManyCallbacks[+T] private[ManyCallbacks] (
@@ -459,67 +431,68 @@ private[future] final object Promise {
     final val c4: Callbacks[T],
     private[ManyCallbacks] final val remainingCapacity: Int) extends Callbacks[T] {
 
+    def this(second: Callbacks[T], first: Callbacks[T]) = this(NoopCallback, NoopCallback, second, first, 2)
+
     //Don't want to incur the runtime overhead of these checks, but this invariant will hold true:
     //require(c3 ne NoopCallback)
     //require(c4 ne NoopCallback)
 
-    private[this] final def merge0[U >: T](m: ManyCallbacks[U]): ManyCallbacks[U] =
-      (m.remainingCapacity: @switch) match {
-        case 0 => ManyCallbacks.two(this, m)
-        case 1 => ManyCallbacks.four(c1, c2, c3, ManyCallbacks.four(c4, m.c2, m.c3, m.c4))
-        case 2 => ManyCallbacks.three(c1, c2, ManyCallbacks.four(c3, c4, m.c3, m.c4))
-      }
+    private[this] final def two[U](second: Callbacks[U], first: Callbacks[U]): ManyCallbacks[U] =
+      new ManyCallbacks[U](NoopCallback, NoopCallback, second, first, 2)
+    private[this] final def three[U](third: Callbacks[U], second: Callbacks[U], first: Callbacks[U]): ManyCallbacks[U] =
+      new ManyCallbacks[U](NoopCallback, third, second, first, 1)
+    private[this] final def four[U](fourth: Callbacks[U], third: Callbacks[U], second: Callbacks[U], first: Callbacks[U]): ManyCallbacks[U] =
+      new ManyCallbacks[U](fourth, third, second, first, 0)
 
-    private[this] final def merge1[U >: T](m: ManyCallbacks[U]): ManyCallbacks[U] =
-      (m.remainingCapacity: @switch) match {
-        case 0 => ManyCallbacks.four(c2, c3, c4, m)
-        case 1 => ManyCallbacks.three(c2, c3, ManyCallbacks.four(c4, m.c2, m.c3, m.c4))
-        case 2 => ManyCallbacks.two(c2, ManyCallbacks.four(c3, c4, m.c3, m.c4))
-      }
+    private[this] final def merge0[U >: T](m: ManyCallbacks[U]): ManyCallbacks[U] = {
+      val mrC = m.remainingCapacity
+      if (mrC == 0)      two(this, m)
+      else if (mrC == 1) four(c1, c2, c3, four(c4, m.c2, m.c3, m.c4))
+      else               three(c1, c2, four(c3, c4, m.c3, m.c4))
+    }
 
-    private[this] final def merge2[U >: T](m: ManyCallbacks[U]): ManyCallbacks[U] =
-      (m.remainingCapacity: @switch) match {
-        case 0 => ManyCallbacks.four(c2, c3, c4, m)
-        case 1 => ManyCallbacks.two(c3, ManyCallbacks.four(c4, m.c2, m.c3, m.c4))
-        case 2 => ManyCallbacks.four(c3, c4, m.c3, m.c4)
-      }
+    private[this] final def merge1[U >: T](m: ManyCallbacks[U]): ManyCallbacks[U] = {
+      val mrC = m.remainingCapacity
+      if (mrC == 0)      four(c2, c3, c4, m)
+      else if (mrC == 1) three(c2, c3, four(c4, m.c2, m.c3, m.c4))
+      else               two(c2, four(c3, c4, m.c3, m.c4))
+    }
+
+    private[this] final def merge2[U >: T](m: ManyCallbacks[U]): ManyCallbacks[U] = {
+      val mrC = m.remainingCapacity
+      if (mrC == 0)      four(c2, c3, c4, m)
+      else if (mrC == 1) two(c3, four(c4, m.c2, m.c3, m.c4))
+      else               four(c3, c4, m.c3, m.c4)
+    }
 
     private[ManyCallbacks] final def merge[U >: T](m: ManyCallbacks[U]): ManyCallbacks[U] =
       if (this ne m) { // Do not merge with itself
-        (remainingCapacity: @switch) match {
-          case 0 => merge0(m)
-          case 1 => merge1(m)
-          case 2 => merge2(m)
-        }
+        val rC = remainingCapacity
+        if (rC == 0)      merge0(m)
+        else if (rC == 1) merge1(m)
+        else              merge2(m)
       } else this
 
     final def append[U >: T](c: Callbacks[U]): Callbacks[U] = {
       if (c.isInstanceOf[ManyCallbacks[U]]) this merge c.asInstanceOf[ManyCallbacks[U]]
       else if (c eq NoopCallback) this // Don't append Noops
-      else /*if (c.isInstanceOf[Callback[U]])*/
-        (remainingCapacity: @switch) match {
-          case 0 => ManyCallbacks.two(this, c)
-          case 1 => ManyCallbacks.four(c2, c3, c4, c)
-          case 2 => ManyCallbacks.three(c3, c4, c)
-        }
+      else /*if (c.isInstanceOf[Callback[U]])*/ {
+        val rC = remainingCapacity
+        if (rC == 0)      two(this, c)
+        else if (rC == 1) four(c2, c3, c4, c)
+        else              three(c3, c4, c)
+      }
     }
 
     override final def prepend[U >: T](c: Callbacks[U]): Callbacks[U] = {
       if (c eq NoopCallback) this // Don't prepend Noops
       else if (c.isInstanceOf[ManyCallbacks[U]]) c.asInstanceOf[ManyCallbacks[U]] merge this
-      else /*if (c.isInstanceOf[Callback[U]])*/
-        (remainingCapacity: @switch) match {
-          case 0 => ManyCallbacks.two(c, this)
-          case 1 => ManyCallbacks.four(c, c2, c3, c4)
-          case 2 => ManyCallbacks.three(c, c3, c4)
-        }
-    }
-
-    override final def submitWithValue(v: Try[T @uncheckedVariance]): Unit = {
-      c1.submitWithValue(v)
-      c2.submitWithValue(v)
-      c3.submitWithValue(v)
-      c4.submitWithValue(v)
+      else /*if (c.isInstanceOf[Callback[U]])*/ {
+        val rC = remainingCapacity
+        if (rC == 0)      two(c, this)
+        else if (rC == 1) four(c, c2, c3, c4)
+        else              three(c, c3, c4)
+      }
     }
 
     override final def toString: String = s"Callbacks($c1, $c2, $c3, $c4)"
