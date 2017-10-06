@@ -313,15 +313,16 @@ private[future] final object Promise {
      *  Used by `onComplete()` to add callbacks to a promise and by `link()` to transfer callbacks
      *  to the root promise when linking two promises together.
      */
-    @tailrec private final def dispatchOrAddCallbacks(callbacks: Callbacks[T]): Unit = {
-      val state = get()
-      if (state.isInstanceOf[Try[T]]) submitWithValue(callbacks, state.asInstanceOf[Try[T]])
-      else if (state.isInstanceOf[Callbacks[T]]) {
-        if(compareAndSet(state, state.asInstanceOf[Callbacks[T]] prepend callbacks)) ()
-        else dispatchOrAddCallbacks(callbacks)
-      } else /*if (state.isInstanceOf[Link[T]])*/
-        state.asInstanceOf[Link[T]].promise().dispatchOrAddCallbacks(callbacks)
-    }
+    @tailrec private final def dispatchOrAddCallbacks(callbacks: Callbacks[T]): Unit = 
+      if (callbacks ne NoopCallback) {
+        val state = get()
+        if (state.isInstanceOf[Try[T]]) submitWithValue(callbacks, state.asInstanceOf[Try[T]])
+        else if (state.isInstanceOf[Callbacks[T]]) {
+          if(compareAndSet(state, state.asInstanceOf[Callbacks[T]] prepend callbacks)) ()
+          else dispatchOrAddCallbacks(callbacks)
+        } else /*if (state.isInstanceOf[Link[T]])*/
+          state.asInstanceOf[Link[T]].promise().dispatchOrAddCallbacks(callbacks)
+      }
 
     private[this] final def submitWithValue(c: Callbacks[T], v: Try[T]): Unit = {
        if (c.isInstanceOf[AbstractTransformationalPromise[T,_]])
@@ -354,8 +355,10 @@ private[future] final object Promise {
             throw new IllegalStateException("Cannot link completed promises together")
         } else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].link(promise)
         else /*if (state.isInstanceOf[Callbacks[T]]) */ {
-          if (compareAndSet(state, target)) promise.dispatchOrAddCallbacks(state.asInstanceOf[Callbacks[T]])
-          else link(target)
+          if (compareAndSet(state, target)) {
+            if (state ne NoopCallback)
+              promise.dispatchOrAddCallbacks(state.asInstanceOf[Callbacks[T]])
+          } else link(target)
         }
       }
     }
