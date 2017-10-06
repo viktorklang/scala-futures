@@ -324,9 +324,10 @@ private[future] final object Promise {
     }
 
     private[this] final def submitWithValue(c: Callbacks[T], v: Try[T]): Unit = {
-       if (c.isInstanceOf[TransformationalPromise[T,({type Id[a] = a})#Id,_]])
-         c.asInstanceOf[TransformationalPromise[T,({type Id[a] = a})#Id,_]].submitWithValue(v)
-       else if (c.isInstanceOf[ManyCallbacks[T]]) c.asInstanceOf[ManyCallbacks[T]].submitWithValue(v)
+       if (c.isInstanceOf[AbstractTransformationalPromise[T,_]])
+         c.asInstanceOf[AbstractTransformationalPromise[T,_]].submitWithValue(v)
+       else if (c.isInstanceOf[ManyCallbacks[T]])
+         c.asInstanceOf[ManyCallbacks[T]].submitWithValue(v)
     }
 
     /** Link this promise to the root of another promise using `link()`. Should only be
