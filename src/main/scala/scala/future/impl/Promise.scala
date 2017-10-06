@@ -324,13 +324,7 @@ private[future] final object Promise {
     private[this] final def submitWithValue(c: Callbacks[T], v: Try[T]): Unit = {
        if (c.isInstanceOf[TransformationalPromise[T,({type Id[a] = a})#Id,_]])
          c.asInstanceOf[TransformationalPromise[T,({type Id[a] = a})#Id,_]].submitWithValue(v)
-       else if (c.isInstanceOf[ManyCallbacks[T]]) {
-         val m = c.asInstanceOf[ManyCallbacks[T]]
-         submitWithValue(m.c1, v)
-         submitWithValue(m.c2, v)
-         submitWithValue(m.c3, v)
-         submitWithValue(m.c4, v)
-       }
+       else if (c.isInstanceOf[ManyCallbacks[T]]) c.asInstanceOf[ManyCallbacks[T]].submitWithValue(v)
     }
 
     /** Link this promise to the root of another promise using `link()`. Should only be
@@ -364,17 +358,23 @@ private[future] final object Promise {
     }
   }
 
-  final class TransformationalPromise[F, M[_], T](f: Try[F] => M[T], ec: ExecutionContext) extends DefaultPromise[T]() with Callbacks[F] with Runnable with OnCompleteRunnable {
+  sealed abstract class AbstractTransformationalPromise[+F, T] extends DefaultPromise[T]() with Callbacks[F] with Runnable with OnCompleteRunnable {
+    override final def prepend[U >: F](c: Callbacks[U]): Callbacks[U] =
+      if (c.isInstanceOf[ManyCallbacks[U]]) c.asInstanceOf[ManyCallbacks[U]].append(this)
+      else if (c eq Promise.NoopCallback) this
+      else new ManyCallbacks(c.asInstanceOf[AbstractTransformationalPromise[U,_]], this)
+
+    def submitWithValue(v: Try[F @uncheckedVariance]): Unit
+
+    override final def toString: String = super[DefaultPromise].toString
+  }
+
+  final class TransformationalPromise[F, M[_], T](f: Try[F] => M[T], ec: ExecutionContext) extends AbstractTransformationalPromise[F, T] {
     private[this] final var _arg: AnyRef = ec // Is first the EC (needs to be pre-prepared) -> then the value -> then null
     private[this] final var _fun: Try[F] => M[T] = f // Is first the transformation function -> then null
 
-    override final def prepend[U >: F](c: Callbacks[U]): Callbacks[U] =
-      if (c.isInstanceOf[ManyCallbacks[U]]) c.asInstanceOf[ManyCallbacks[U]].append(this: Callbacks[F])
-      else if (c eq Promise.NoopCallback) this
-      else new ManyCallbacks(c, this)
-
     // Gets invoked when a value is available, schedules it to be run():ed by the ExecutionContext
-    final def submitWithValue(v: Try[F @uncheckedVariance]): Unit = {
+    override final def submitWithValue(v: Try[F @uncheckedVariance]): Unit = {
       val a = _arg
       if (a.isInstanceOf[ExecutionContext]) {
         val executor = a.asInstanceOf[ExecutionContext]
@@ -404,8 +404,6 @@ private[future] final object Promise {
         }
       }
     }
-
-    override final def toString: String = super[DefaultPromise].toString
   }
 
   /* Encodes the concept of having callbacks.
@@ -424,77 +422,56 @@ private[future] final object Promise {
     override def toString: String = "Noop"
   }
 
-  final class ManyCallbacks[+T] private[ManyCallbacks] (
-    final val c1: Callbacks[T],
-    final val c2: Callbacks[T],
-    final val c3: Callbacks[T],
-    final val c4: Callbacks[T],
-    private[ManyCallbacks] final val remainingCapacity: Int) extends Callbacks[T] {
+  final class ManyCallbacks[+T] private[ManyCallbacks](
+    final val p: AbstractTransformationalPromise[T,_],
+    final val next: Callbacks[T],
+    final val size: Int) extends Callbacks[T] {
 
-    def this(second: Callbacks[T], first: Callbacks[T]) = this(NoopCallback, NoopCallback, second, first, 2)
+    final def this(first: AbstractTransformationalPromise[T,_]) =
+      this(first, NoopCallback, 1)
 
-    //Don't want to incur the runtime overhead of these checks, but this invariant will hold true:
-    //require(c3 ne NoopCallback)
-    //require(c4 ne NoopCallback)
+    final def this(second: AbstractTransformationalPromise[T,_], first: AbstractTransformationalPromise[T,_]) =
+      this(second, first, 2)
 
-    private[this] final def two[U](second: Callbacks[U], first: Callbacks[U]): ManyCallbacks[U] =
-      new ManyCallbacks[U](NoopCallback, NoopCallback, second, first, 2)
-    private[this] final def three[U](third: Callbacks[U], second: Callbacks[U], first: Callbacks[U]): ManyCallbacks[U] =
-      new ManyCallbacks[U](NoopCallback, third, second, first, 1)
-    private[this] final def four[U](fourth: Callbacks[U], third: Callbacks[U], second: Callbacks[U], first: Callbacks[U]): ManyCallbacks[U] =
-      new ManyCallbacks[U](fourth, third, second, first, 0)
+    override final def prepend[U >: T](c: Callbacks[U]): Callbacks[U] =
+      if (c.isInstanceOf[AbstractTransformationalPromise[U,_]]) prepend(c.asInstanceOf[AbstractTransformationalPromise[U,_]])
+      else if (c.isInstanceOf[ManyCallbacks[U]]) c.asInstanceOf[ManyCallbacks[U]].concat(this)
+      else /* if (c eq NoopCallback) */this
 
-    private[this] final def merge0[U >: T](m: ManyCallbacks[U]): ManyCallbacks[U] = {
-      val mrC = m.remainingCapacity
-      if (mrC == 0)      two(this, m)
-      else if (mrC == 1) four(c1, c2, c3, four(c4, m.c2, m.c3, m.c4))
-      else               three(c1, c2, four(c3, c4, m.c3, m.c4))
+    final def prepend[U >: T](tp: AbstractTransformationalPromise[U,_]): ManyCallbacks[U] = 
+      new ManyCallbacks(tp, this, size + 1)
+
+    final def append[U >: T](tp: AbstractTransformationalPromise[U,_]): ManyCallbacks[U] =
+      this concat new ManyCallbacks(tp)
+
+    final def concat[U >: T](m: ManyCallbacks[U]): ManyCallbacks[U] = {
+      @tailrec def toBuf(buf: Array[AbstractTransformationalPromise[T,_]], pos: Int, cur: ManyCallbacks[T]): Array[AbstractTransformationalPromise[T,_]] =
+        if (pos < size) {
+          buf(pos) = cur.p
+          val cont = cur.next
+          if (cont.isInstanceOf[ManyCallbacks[T]]) toBuf(buf, pos + 1, cont.asInstanceOf[ManyCallbacks[T]])
+          else if (cont.isInstanceOf[AbstractTransformationalPromise[T,_]]) {
+            buf(pos + 1) = cont.asInstanceOf[AbstractTransformationalPromise[T,_]]
+            buf
+          } else buf
+        } else buf
+        
+        @tailrec def fromBuf(buf: Array[AbstractTransformationalPromise[T,_]], pos: Int, cbs: ManyCallbacks[U]): ManyCallbacks[U] =
+          if (pos >= 0) fromBuf(buf, pos - 1, cbs.prepend(buf(pos))) else cbs
+
+        fromBuf(toBuf(new Array[AbstractTransformationalPromise[T,_]](size), 0, this), size, m)
     }
 
-    private[this] final def merge1[U >: T](m: ManyCallbacks[U]): ManyCallbacks[U] = {
-      val mrC = m.remainingCapacity
-      if (mrC == 0)      four(c2, c3, c4, m)
-      else if (mrC == 1) three(c2, c3, four(c4, m.c2, m.c3, m.c4))
-      else               two(c2, four(c3, c4, m.c3, m.c4))
-    }
+    final def submitWithValue(v: Try[T @uncheckedVariance]): Unit = submitWithValue(this, v)
 
-    private[this] final def merge2[U >: T](m: ManyCallbacks[U]): ManyCallbacks[U] = {
-      val mrC = m.remainingCapacity
-      if (mrC == 0)      four(c2, c3, c4, m)
-      else if (mrC == 1) two(c3, four(c4, m.c2, m.c3, m.c4))
-      else               four(c3, c4, m.c3, m.c4)
-    }
+    @tailrec private[this] final def submitWithValue(cb: Callbacks[T], v: Try[T]): Unit =
+      if (cb.isInstanceOf[AbstractTransformationalPromise[T,_]]) cb.asInstanceOf[AbstractTransformationalPromise[T,_]].submitWithValue(v)
+      else if (cb.isInstanceOf[ManyCallbacks[T]]) {
+        val m = cb.asInstanceOf[ManyCallbacks[T]]
+        m.p.submitWithValue(v)
+        submitWithValue(m.next, v)
+      } /* else if (c eq NoopCallback) ()*/
 
-    private[ManyCallbacks] final def merge[U >: T](m: ManyCallbacks[U]): ManyCallbacks[U] =
-      if (this ne m) { // Do not merge with itself
-        val rC = remainingCapacity
-        if (rC == 0)      merge0(m)
-        else if (rC == 1) merge1(m)
-        else              merge2(m)
-      } else this
-
-    final def append[U >: T](c: Callbacks[U]): Callbacks[U] = {
-      if (c.isInstanceOf[ManyCallbacks[U]]) this merge c.asInstanceOf[ManyCallbacks[U]]
-      else if (c eq NoopCallback) this // Don't append Noops
-      else /*if (c.isInstanceOf[Callback[U]])*/ {
-        val rC = remainingCapacity
-        if (rC == 0)      two(this, c)
-        else if (rC == 1) four(c2, c3, c4, c)
-        else              three(c3, c4, c)
-      }
-    }
-
-    override final def prepend[U >: T](c: Callbacks[U]): Callbacks[U] = {
-      if (c eq NoopCallback) this // Don't prepend Noops
-      else if (c.isInstanceOf[ManyCallbacks[U]]) c.asInstanceOf[ManyCallbacks[U]] merge this
-      else /*if (c.isInstanceOf[Callback[U]])*/ {
-        val rC = remainingCapacity
-        if (rC == 0)      two(c, this)
-        else if (rC == 1) four(c, c2, c3, c4)
-        else              three(c, c3, c4)
-      }
-    }
-
-    override final def toString: String = s"Callbacks($c1, $c2, $c3, $c4)"
+    override final def toString: String = s"Callbacks($p, $next)"
   }
 }
