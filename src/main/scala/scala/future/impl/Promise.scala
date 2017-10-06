@@ -289,19 +289,21 @@ private[future] final object Promise {
       }
 
     override final def tryComplete(value: Try[T]): Boolean =
-      tryComplete0(resolve(value))
+      tryComplete0(value, false)
 
     @tailrec
-    private final def tryComplete0(v: Try[T]): Boolean = {
+    private final def tryComplete0(v: Try[T], resolved: Boolean): Boolean = {
       val state = get()
-      if (state.isInstanceOf[Callbacks[T]]) {
-        if (compareAndSet(state, v)) {
-          submitWithValue(state.asInstanceOf[Callbacks[T]], v)
+      if (state.isInstanceOf[Try[T]]) false
+      else if (state.isInstanceOf[Callbacks[T]]) {
+        val rv = if (resolved) v else resolve(v)
+        if (compareAndSet(state, rv)) {
+          submitWithValue(state.asInstanceOf[Callbacks[T]], rv)
           true
-        } else tryComplete0(v)
+        } else tryComplete0(rv, true)
       }
-      else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].promise().tryComplete0(v)
-      else /*if (state.isInstanceOf[Try[T]])*/ false
+      else /*if (state.isInstanceOf[Link[T]])*/
+        state.asInstanceOf[Link[T]].promise().tryComplete0(v, resolved)
     }
 
     override final def onComplete[U](func: Try[T] => U)(implicit executor: ExecutionContext): Unit =
