@@ -66,7 +66,7 @@ final class ImprovedTransformationBenchFun(implicit val ec: stdlib.ExecutionCont
 @Fork(value = 1, jvmArgsAppend = Array("-ea","-server","-XX:+UseCompressedOops","-XX:+AggressiveOpts","-XX:+AlwaysPreTouch", "-XX:+UseCondCardMark"))
 class TransformationBenchmark {
 
-  @Param(Array[String]("stdlib", "improved", "improved2"))
+  @Param(Array[String]("stdlib", "improved"))
   var impl: String = _
 
   @Param(Array[String]("fjp", "fix"))
@@ -94,12 +94,7 @@ class TransformationBenchmark {
         override final def execute(r: Runnable) = g.execute(r)
         override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
       })
-      case "improved" => new ImprovedTransformationBenchFun()(new stdlib.ExecutionContext {
-        val g = executor
-        override final def execute(r: Runnable) = g.execute(r)
-        override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
-      })
-      case "improved2" => new ImprovedTransformationBenchFun()(new BatchingExecutor with stdlib.ExecutionContext {
+      case "improved" => new ImprovedTransformationBenchFun()(new BatchingExecutor with stdlib.ExecutionContext {
         val g = executor
         override final def unbatchedExecute(r: Runnable) = g.execute(r)
         override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
