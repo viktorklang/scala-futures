@@ -192,9 +192,6 @@ private[future] final object Promise {
       else this.asInstanceOf[Future[S]]
     }
 
-      //if (!value0.isInstanceOf[Failure[T]]) dispatchOrAddCallbacks(new MapPromise(f, executor))
-      //else this.asInstanceOf[Future[S]]
-
     override def filter(@deprecatedName('pred) p: T => Boolean)(implicit executor: ExecutionContext): Future[T] =
       if (!value0.isInstanceOf[Failure[T]]) super[Future].filter(p)
       else this

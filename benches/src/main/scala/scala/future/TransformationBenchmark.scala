@@ -52,9 +52,9 @@ abstract class AbstractBaseBenchmark {
       override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
     }
 
-    improvedEC = new BatchingExecutor with stdlib.ExecutionContext {
+    improvedEC = new /*BatchingExecutor with*/ stdlib.ExecutionContext {
       val g = executor
-      override final def unbatchedExecute(r: Runnable) = g.execute(r)
+      override final def execute(r: Runnable) = g.execute(r)
       override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
     }
   }
@@ -174,6 +174,15 @@ class ZipWithBenchmark extends OpBenchmark {
   override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
     f.zipWith(f)(transformationFun)
 }
+
+class AndThenBenchmark extends OpBenchmark {
+  final val effect: PartialFunction[Try[Result], Unit] = { case t: Try[Result] => () }
+  override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+    f.andThen(effect)
+  override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+    f.andThen(effect)
+}
+
 
 /*class ZipBenchmark extends OpBenchmark {
   override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
