@@ -20,6 +20,8 @@ import scala.concurrent.duration._
 import scala.collection.generic.CanBuildFrom
 import scala.reflect.ClassTag
 
+import scala.collection.mutable.Builder
+
 /** A `Future` represents a value which may or may not *currently* be available,
  *  but will be available at some point, or an exception if that value could not be made available.
  *
@@ -601,6 +603,9 @@ object Future {
   private[this] final val _zipWithTuple2: (Any, Any) => (Any, Any) = Tuple2.apply _
   private[future] final def zipWithTuple2[T,U] = _zipWithTuple2.asInstanceOf[(T,U) => (T,U)]
 
+  private[this] final val _addToBuilderFun: (Builder[Any, Nothing], Any) => Builder[Any, Nothing] = (b: Builder[Any, Nothing], e: Any) => b += e
+  private[future] final def addToBuilderFun[A, M[_]] =  _addToBuilderFun.asInstanceOf[Function2[Builder[A, M[A]], A, Builder[A, M[A]]]]
+
   //---------------------------------------------------------------------------//
 
   /** A Future which is never completed.
@@ -712,7 +717,7 @@ object Future {
    */
   def sequence[A, M[X] <: TraversableOnce[X]](in: M[Future[A]])(implicit cbf: CanBuildFrom[M[Future[A]], A, M[A]], executor: ExecutionContext): Future[M[A]] = {
     in.foldLeft(successful(cbf(in))) {
-      (fr, fa) => fr.zipWith(fa)(_ += _)
+      (fr, fa) => fr.zipWith(fa)(addToBuilderFun)
     }.map(_.result())(InternalCallbackExecutor)
   }
 
@@ -888,7 +893,7 @@ object Future {
    */
   def traverse[A, B, M[X] <: TraversableOnce[X]](in: M[A])(fn: A => Future[B])(implicit cbf: CanBuildFrom[M[A], B, M[B]], executor: ExecutionContext): Future[M[B]] =
     in.foldLeft(successful(cbf(in))) {
-      (fr, a) => fr.zipWith(fn(a))(_ += _)
+      (fr, a) => fr.zipWith(fn(a))(addToBuilderFun)
     }.map(_.result())(InternalCallbackExecutor)
 
 
