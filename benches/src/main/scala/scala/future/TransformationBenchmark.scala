@@ -4,70 +4,17 @@ import scala.concurrent.duration._
 import java.util.concurrent.{TimeUnit,Executor, ExecutorService}
 import org.openjdk.jmh.annotations._
 import scala.util.Try
-
+import scala.annotation.tailrec
 import scala.{concurrent => stdlib}
 import scala.{future => improved}
 
-abstract class TransformationBenchFun {
-  implicit def ec: stdlib.ExecutionContext
-  type Result = String
-  val transformation = (s: Result) => s
-  def setup(): Unit
-  def apply(ops: Int): stdlib.Awaitable[Result]
-  def teardown(): Unit
-}
-
-final class StdlibTransformationBenchFun(implicit val ec: stdlib.ExecutionContext) extends TransformationBenchFun {
-  var p: stdlib.Promise[Result] = _
-  final def setup(): Unit = {
-    p = stdlib.Promise[Result]
-  }
-  final def apply(ops: Int): stdlib.Future[Result] = {
-    var cf = p.future
-    var i  = ops
-    while(i > 0) {
-      cf = cf.map(transformation)
-      i -= 1
-    }
-    p.success("stlib")
-    cf
-  }
-  final def teardown(): Unit = {
-    p = null
-  }
-}
-
-final class ImprovedTransformationBenchFun(implicit val ec: stdlib.ExecutionContext) extends TransformationBenchFun {
-  var p: improved.Promise[Result] = _
-  final def setup(): Unit = {
-    p = improved.Promise[Result]
-  }
-  final def apply(ops: Int): improved.Future[Result] = {
-    var cf = p.future
-    var i  = ops
-    while(i > 0) {
-      cf = cf.map(transformation)
-      i -= 1
-    }
-    p.success("improved")
-    cf
-  }
-  final def teardown(): Unit = {
-    p = null
-  }
-}
-
-
 @State(Scope.Benchmark)
 @BenchmarkMode(Array(Mode.Throughput))
-@OutputTimeUnit(TimeUnit.MICROSECONDS)
+@OutputTimeUnit(TimeUnit.SECONDS)
 @Warmup(iterations = 1000)
 @Measurement(iterations = 10000)
 @Fork(value = 1, jvmArgsAppend = Array("-ea","-server","-XX:+UseCompressedOops","-XX:+AggressiveOpts","-XX:+AlwaysPreTouch", "-XX:+UseCondCardMark"))
-class TransformationBenchmark {
-
-  @Param(Array[String]("stdlib", "improved"))
-  var impl: String = _
+abstract class AbstractBaseBenchmark {
 
   @Param(Array[String]("fjp", "fix"))
   var pool: String = _
@@ -75,9 +22,15 @@ class TransformationBenchmark {
   @Param(Array[String]("1"))
   var threads: Int = _
 
-  var benchFun: TransformationBenchFun = _
+  @Param(Array[String]("pre","post"))
+  var completed: String = _
+
+  var isCompleted: Boolean = _
 
   var executor: Executor = _
+
+  var stdLibEC: stdlib.ExecutionContext = _
+  var improvedEC: stdlib.ExecutionContext = _
 
   val timeout = 60.seconds
 
@@ -88,63 +41,143 @@ class TransformationBenchmark {
       case "fix" => java.util.concurrent.Executors.newFixedThreadPool(threads)
     }
 
-    benchFun = impl match {
-      case "stdlib" => new StdlibTransformationBenchFun()(new stdlib.ExecutionContext {
-        val g = executor
-        override final def execute(r: Runnable) = g.execute(r)
-        override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
-      })
-      case "improved" => new ImprovedTransformationBenchFun()(new BatchingExecutor with stdlib.ExecutionContext {
-        val g = executor
-        override final def unbatchedExecute(r: Runnable) = g.execute(r)
-        override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
-      })
-      case other => throw new IllegalArgumentException(s"impl was '$other'")
+    isCompleted = completed match {
+      case "pre" => true
+      case "post" => false
     }
-  }
 
-  @TearDown(Level.Trial)
-  final def shutdown: Unit = {
-    executor = executor match {
-      case es: ExecutorService =>
-        es.shutdown()
-        es.awaitTermination(1, TimeUnit.MINUTES)
-        null
-      case _ => null
+    stdLibEC = new stdlib.ExecutionContext {
+      val g = executor
+      override final def execute(r: Runnable) = g.execute(r)
+      override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
+    }
+
+    improvedEC = new BatchingExecutor with stdlib.ExecutionContext {
+      val g = executor
+      override final def unbatchedExecute(r: Runnable) = g.execute(r)
+      override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
     }
   }
 
   @TearDown(Level.Invocation)
-  final def teardown = benchFun.teardown()
+  def teardown: Unit
 
   @Setup(Level.Invocation)
-  final def setup = benchFun.setup()
+  def setup: Unit
+
+  def benchFunStdlib(ops: Int)(implicit ec: stdlib.ExecutionContext): stdlib.Awaitable[Any]
+  def benchFunImproved(ops: Int)(implicit ec: stdlib.ExecutionContext): stdlib.Awaitable[Any]
 
   @Benchmark
   @OperationsPerInvocation(1)
-  final def transformation_1 = stdlib.Await.result(benchFun(1), timeout)
+  final def x1_stdlib = stdlib.Await.result(benchFunStdlib(1)(stdLibEC), timeout)
 
   @Benchmark
-  @OperationsPerInvocation(2)
-  final def transformation_2 = stdlib.Await.result(benchFun(2), timeout)
-
-  @Benchmark
-  @OperationsPerInvocation(4)
-  final def transformation_4 = stdlib.Await.result(benchFun(4), timeout)
-
-  @Benchmark
-  @OperationsPerInvocation(16)
-  final def transformation_16 = stdlib.Await.result(benchFun(16), timeout)
-
-  @Benchmark
-  @OperationsPerInvocation(64)
-  final def transformation_64 = stdlib.Await.result(benchFun(64), timeout)
+  @OperationsPerInvocation(1)
+  final def x1_improved = stdlib.Await.result(benchFunImproved(1)(improvedEC), timeout)
 
   @Benchmark
   @OperationsPerInvocation(1024)
-  final def transformation_1024 = stdlib.Await.result(benchFun(1024), timeout)
+  final def x1024_stdlib = stdlib.Await.result(benchFunStdlib(1024)(stdLibEC), timeout)
 
   @Benchmark
-  @OperationsPerInvocation(8192)
-  final def transformation_8192 = stdlib.Await.result(benchFun(8192), timeout)
+  @OperationsPerInvocation(1024)
+  final def x1024_improved = stdlib.Await.result(benchFunImproved(1024)(improvedEC), timeout)
 }
+
+abstract class OpBenchmark extends AbstractBaseBenchmark {
+  type Result = String
+
+  private[this] final var stdlibP: stdlib.Promise[Result] = _
+  private[this] final var improvedP: improved.Promise[Result] = _
+
+  override final def setup: Unit = {
+    stdlibP = if (isCompleted) stdlib.Promise.successful("stdlib") else stdlib.Promise[Result]
+    improvedP = if (isCompleted) improved.Promise.successful("improved") else improved.Promise[Result]
+  }
+  override final def teardown: Unit = {
+    stdlibP = null
+    improvedP = null
+  }
+
+  def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result]
+
+  def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result]
+
+  final override def benchFunStdlib(ops: Int)(implicit ec: stdlib.ExecutionContext): stdlib.Awaitable[Any] = {
+    @tailrec def next(i: Int)(f: stdlib.Future[Result]): stdlib.Future[Result] =
+      if (i > 0) next(i - 1)(xformStdlib(f)) else f
+
+    val cf = next(ops)(stdlibP.future)
+    if (!isCompleted)
+    stdlibP.success("stdlib")
+    cf
+  }
+
+  final override def benchFunImproved(ops: Int)(implicit ec: stdlib.ExecutionContext): stdlib.Awaitable[Any] = {
+    @tailrec def next(i: Int)(f: improved.Future[Result]): improved.Future[Result] =
+      if (i > 0) next(i - 1)(xformImproved(f)) else f
+
+    val cf = next(ops)(improvedP.future)
+    if(!isCompleted)
+    improvedP.success("improved")
+    cf
+  }
+}
+
+class MapBenchmark extends OpBenchmark {
+  final val transformationFun = (r: Result) => r
+  override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+    f.map(transformationFun)
+  override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+    f.map(transformationFun)
+}
+
+class FilterBenchmark extends OpBenchmark {
+  final val transformationFun = (r: Result) => true
+  override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+    f.filter(transformationFun)
+  override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+    f.filter(transformationFun)
+}
+
+class TransformBenchmark extends OpBenchmark {
+  final val transformationFun = (t: Try[Result]) => t
+  override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+    f.transform(transformationFun)
+  override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+    f.transform(transformationFun)
+}
+
+class TransformWithBenchmark extends OpBenchmark {
+  final val transformationFunStdlib = (t: Try[Result]) => stdlib.Future.fromTry(t)
+  final val transformationFunImproved = (t: Try[Result]) => improved.Future.fromTry(t)
+  override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+    f.transformWith(transformationFunStdlib)
+  override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+    f.transformWith(transformationFunImproved)
+}
+
+class FlatMapBenchmark extends OpBenchmark {
+  final val transformationFunStdlib = (t: Result) => stdlib.Future.successful(t)
+  final val transformationFunImproved = (t: Result) => improved.Future.successful(t)
+  override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+    f.flatMap(transformationFunStdlib)
+  override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+    f.flatMap(transformationFunImproved)
+}
+
+class ZipWithBenchmark extends OpBenchmark {
+  final val transformationFun = (t1: Result, t2: Result) => t2
+  override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+    f.zipWith(f)(transformationFun)
+  override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+    f.zipWith(f)(transformationFun)
+}
+
+/*class ZipBenchmark extends OpBenchmark {
+  override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+    f.zip(f)
+  override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+    f.zip(f)
+}*/
