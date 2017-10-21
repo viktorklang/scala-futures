@@ -188,7 +188,7 @@ private[future] final object Promise {
       else this.asInstanceOf[Future[S]]
 
     override def map[S](f: T => S)(implicit executor: ExecutionContext): Future[S] = {
-      if (!value0.isInstanceOf[Failure[T]]) dispatchOrAddCallbacks(new MapPromise(f, executor))
+      if (!value0.isInstanceOf[Failure[T]]) dispatchOrAddCallbacks(new MapPromise(f, executor.prepare()))
       else this.asInstanceOf[Future[S]]
     }
 
