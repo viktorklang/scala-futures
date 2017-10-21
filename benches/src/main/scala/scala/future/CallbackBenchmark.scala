@@ -86,12 +86,12 @@ class CallbackBenchmark {
 
     benchFun = impl match {
       case "stdlib" => new StdlibCallbackBenchFun()(new stdlib.ExecutionContext {
-        val g = executor
+        private[this] val g = executor
         override final def execute(r: Runnable) = g.execute(r)
         override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
       })
       case "improved" => new ImprovedCallbackBenchFun()(new BatchingExecutor with stdlib.ExecutionContext {
-        val g = executor
+        private[this] val g = executor
         override final def unbatchedExecute(r: Runnable) = g.execute(r)
         override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
       })
