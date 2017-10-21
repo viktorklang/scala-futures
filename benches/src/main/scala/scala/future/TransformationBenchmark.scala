@@ -59,6 +59,17 @@ abstract class AbstractBaseBenchmark {
     }
   }
 
+  @TearDown(Level.Trial)
+  final def shutdown: Unit = {
+    executor = executor match {
+      case es: ExecutorService =>
+        es.shutdown()
+        es.awaitTermination(1, TimeUnit.MINUTES)
+        null
+      case _ => null
+    }
+  }
+
   @TearDown(Level.Invocation)
   def teardown: Unit
 

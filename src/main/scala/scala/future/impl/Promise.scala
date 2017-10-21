@@ -159,7 +159,7 @@ private[future] final object Promise {
      * Constructs a new, completed, Promise.
      */
     def this(result: Try[T]) = {
-      this()
+      this() // TODO: avoid the initial NoopCallback write and directly write the resolve(result)
       set(resolve(result))
     }
 
