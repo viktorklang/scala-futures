@@ -47,13 +47,13 @@ abstract class AbstractBaseBenchmark {
     }
 
     stdLibEC = new stdlib.ExecutionContext {
-      val g = executor
+      private[this] val g = executor
       override final def execute(r: Runnable) = g.execute(r)
       override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
     }
 
     improvedEC = new /*BatchingExecutor with*/ stdlib.ExecutionContext {
-      val g = executor
+      private[this] val g = executor
       override final def execute(r: Runnable) = g.execute(r)
       override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
     }
@@ -192,6 +192,19 @@ class AndThenBenchmark extends OpBenchmark {
     f.andThen(effect)
   override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
     f.andThen(effect)
+}
+
+class VariousBenchmark extends OpBenchmark {
+  final val mapFun: Result => Result = _.toUpperCase
+  final val stdlibFlatMapFun: Result => stdlib.Future[Result] = r => stdlib.Future.successful(r)
+  final val improvedFlatMapFun: Result => improved.Future[Result] = r => improved.Future.successful(r)
+  final val filterFun: Result => Boolean = _ ne null
+  final val transformFun: Try[Result] => Try[Result] = _ => throw null
+  final val recoverFun: PartialFunction[Throwable, Result] = { case _ => "OK" }
+  override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+    f.map(mapFun).flatMap(stdlibFlatMapFun).filter(filterFun).zipWith(f)((a, b) => a).transform(transformFun).recover(recoverFun)
+  override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+    f.map(mapFun).flatMap(improvedFlatMapFun).filter(filterFun).zipWith(f)((a, b) => a).transform(transformFun).recover(recoverFun)
 }
 
 
