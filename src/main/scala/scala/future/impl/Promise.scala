@@ -32,12 +32,18 @@ private[future] final object Promise {
     * http://creativecommons.org/publicdomain/zero/1.0/
     */
     private final class CompletionLatch[T] extends AbstractQueuedSynchronizer with (Try[T] => Unit) {
+      //@volatie not needed since we use acquire/release
+      /*@volatile*/ private[this] var _result: Try[T] = null
+      final def result: Try[T] = _result
       override protected def tryAcquireShared(ignored: Int): Int = if (getState != 0) 1 else -1
       override protected def tryReleaseShared(ignore: Int): Boolean = {
         setState(1)
         true
       }
-      override def apply(ignored: Try[T]): Unit = releaseShared(1)
+      override def apply(value: Try[T]): Unit = {
+        _result = value // This line MUST go before releaseShared
+        releaseShared(1)
+      }
     }
 
     private final class Link[T](to: DefaultPromise[T]) extends AtomicReference[DefaultPromise[T]](to) {
@@ -169,47 +175,47 @@ private[future] final object Promise {
     override def future: Future[T] = this
 
     override def transform[S](f: Try[T] => Try[S])(implicit executor: ExecutionContext): Future[S] =
-      dispatchOrAddCallbacks(new TransformPromise(f, executor.prepare())).future
+      dispatchOrAddCallbacks(new XformPromise[T, Try, S](f, executor))
 
     override def transformWith[S](f: Try[T] => Future[S])(implicit executor: ExecutionContext): Future[S] =
-      dispatchOrAddCallbacks(new TransformWithPromise(f, executor.prepare())).future
+      dispatchOrAddCallbacks(new XformPromise[T, Future, S](f, executor))
 
     override def onFailure[U](@deprecatedName('callback) pf: PartialFunction[Throwable, U])(implicit executor: ExecutionContext): Unit =
-      if (!value0.isInstanceOf[Success[T]]) super[Future].onFailure(pf)
+      if (!value0.isInstanceOf[Success[T]]) super[Future].onFailure(pf) // Short-circuit if we get a Failure
 
     override def onSuccess[U](pf: PartialFunction[T, U])(implicit executor: ExecutionContext): Unit = 
-      if (!value0.isInstanceOf[Failure[T]]) super[Future].onSuccess(pf)
+      if (!value0.isInstanceOf[Failure[T]]) super[Future].onSuccess(pf)  // Short-circuit if we get a Success
 
     override def foreach[U](f: T => U)(implicit executor: ExecutionContext): Unit =
-      if (!value0.isInstanceOf[Failure[T]]) super[Future].foreach(f)
+      if (!value0.isInstanceOf[Failure[T]]) super[Future].foreach(f)  // Short-circuit if we get a Success
 
     override def flatMap[S](f: T => Future[S])(implicit executor: ExecutionContext): Future[S] = 
-      if (!value0.isInstanceOf[Failure[T]]) super[Future].flatMap(f)
+      if (!value0.isInstanceOf[Failure[T]]) super[Future].flatMap(f) // Short-circuit if we get a Success
       else this.asInstanceOf[Future[S]]
 
     override def map[S](f: T => S)(implicit executor: ExecutionContext): Future[S] = {
-      if (!value0.isInstanceOf[Failure[T]]) dispatchOrAddCallbacks(new MapPromise(f, executor.prepare()))
+      if (!value0.isInstanceOf[Failure[T]]) super[Future].map(f) // Short-circuit if we get a Success
       else this.asInstanceOf[Future[S]]
     }
 
     override def filter(@deprecatedName('pred) p: T => Boolean)(implicit executor: ExecutionContext): Future[T] =
-      if (!value0.isInstanceOf[Failure[T]]) super[Future].filter(p)
+      if (!value0.isInstanceOf[Failure[T]]) super[Future].filter(p) // Short-circuit if we get a Success
       else this
 
     override def collect[S](pf: PartialFunction[T, S])(implicit executor: ExecutionContext): Future[S] =
-      if (!value0.isInstanceOf[Failure[T]]) super[Future].collect(pf)
+      if (!value0.isInstanceOf[Failure[T]]) super[Future].collect(pf) // Short-circuit if we get a Success
       else this.asInstanceOf[Future[S]]
 
     override def recoverWith[U >: T](pf: PartialFunction[Throwable, Future[U]])(implicit executor: ExecutionContext): Future[U] =
-      if (!value0.isInstanceOf[Success[T]]) super[Future].recoverWith(pf)
+      if (!value0.isInstanceOf[Success[T]]) super[Future].recoverWith(pf) // Short-circuit if we get a Failure
       else this.asInstanceOf[Future[U]]
 
     override def recover[U >: T](pf: PartialFunction[Throwable, U])(implicit executor: ExecutionContext): Future[U] =
-      if (!value0.isInstanceOf[Success[T]]) super[Future].recover(pf)
+      if (!value0.isInstanceOf[Success[T]]) super[Future].recover(pf) // Short-circuit if we get a Failure
       else this.asInstanceOf[Future[U]]
 
     override def mapTo[S](implicit tag: scala.reflect.ClassTag[S]): Future[S] =
-      if (!value0.isInstanceOf[Failure[T]]) super[Future].mapTo[S](tag)
+      if (!value0.isInstanceOf[Failure[T]]) super[Future].mapTo[S](tag) // Short-circuit if we get a Success
       else this.asInstanceOf[Future[S]]
 
     override def toString: String = toString0
@@ -222,37 +228,41 @@ private[future] final object Promise {
     }
 
     /** Try waiting for this promise to be completed.
+     * Returns true if it completed at the end of this waiting time.
+     * Does not allow Duration.Undefined as a parameter, and throws IllegalArgumentException
+     * if it is passed in.
      */
-    protected final def tryAwait(atMost: Duration): Boolean = if (!isCompleted) {
-      import Duration.Undefined
-      atMost match {
-        case e if e eq Undefined => throw new IllegalArgumentException("cannot wait for Undefined period")
-        case Duration.Inf        =>
+    protected final def tryAwait(atMost: Duration): Boolean = tryAwait0(atMost) ne null
+
+    private[this] final def tryAwait0(atMost: Duration): Try[T] =
+      if (atMost ne Duration.Undefined) {
+        val v = value0
+        if ((v ne null) || atMost <= Duration.Zero) v
+        else {
           val l = new CompletionLatch[T]()
           onComplete(l)(InternalCallbackExecutor)
-          l.acquireSharedInterruptibly(1)
-        case Duration.MinusInf   => // Drop out
-        case f: FiniteDuration   =>
-          if (f > Duration.Zero) {
-            val l = new CompletionLatch[T]()
-            onComplete(l)(InternalCallbackExecutor)
-            l.tryAcquireSharedNanos(1, f.toNanos)
-          }
-      }
 
-      isCompleted
-    } else true // Already completed
+          if (atMost.isFinite)
+            l.tryAcquireSharedNanos(1, atMost.toNanos)
+          else
+            l.acquireSharedInterruptibly(1)
+
+          l.result
+        }
+      } else throw new IllegalArgumentException("Cannot wait for Undefined duration of time")
 
     @throws(classOf[TimeoutException])
     @throws(classOf[InterruptedException])
-    final def ready(atMost: Duration)(implicit permit: CanAwait): this.type =
-      if (tryAwait(atMost)) this
-      else throw new TimeoutException("Future timed out after [" + atMost + "]")
+    final def ready(atMost: Duration)(implicit permit: CanAwait): this.type = {
+      result(atMost) // Throws TimeoutException if fails
+      this
+    }
 
     @throws(classOf[Exception])
     final def result(atMost: Duration)(implicit permit: CanAwait): T = {
-      ready(atMost)
-      value0.get // ready throws TimeoutException if timeout so value0.get is safe here
+      val v = tryAwait0(atMost)
+      if (v ne null) v.get // returns the value, or throws the contained exception
+      else throw new TimeoutException("Future timed out after [" + atMost + "]")
     }
 
     override final def isCompleted: Boolean = value0 ne null
@@ -301,11 +311,11 @@ private[future] final object Promise {
       }
       else /*if (state.isInstanceOf[Link[T]])*/ {
         val p = state.asInstanceOf[Link[T]].promise()
-        p.tryComplete0(p.get(), resolved)
+        p.tryComplete0(p.get(), resolved) // Use this to get tailcall optimization and avoid re-resolution
       }
 
     override final def onComplete[U](func: Try[T] => U)(implicit executor: ExecutionContext): Unit =
-      dispatchOrAddCallbacks(new EffectPromise(func, executor.prepare()))
+      dispatchOrAddCallbacks(new XformPromise[T, ({type Id[a] = a})#Id, U](func, executor))
 
     /** Tries to add the callback, if already completed, it dispatches the callback to be executed.
      *  Used by `onComplete()` to add callbacks to a promise and by `link()` to transfer callbacks
@@ -369,9 +379,9 @@ private[future] final object Promise {
     override final def toString: String = super[DefaultPromise].toString
   }
 
-  sealed abstract class XformPromise[F, FM[_], TM[_], T](f: FM[F] => TM[T], ec: ExecutionContext) extends XformCallback[F, T] {
-    private[this] final var _arg: AnyRef = ec // Is first the EC (needs to be pre-prepared) -> then the value -> then null
-    private[this] final var _fun: FM[F] => TM[T] = f // Is first the transformation function -> then null
+  final class XformPromise[F, TM[_], T](f: Try[F] => TM[T], ec: ExecutionContext) extends XformCallback[F, T] {
+    private[this] final var _arg: AnyRef = ec.prepare() // Is first the EC -> then the value -> then null
+    private[this] final var _fun: Try[F] => TM[T] = f // Is first the transformation function -> then null
 
     // Gets invoked when a value is available, schedules it to be run():ed by the ExecutionContext
     // submitWithValue *happens-before* run(), through ExecutionContext.execute.
@@ -386,7 +396,18 @@ private[future] final object Promise {
     }
 
     // Gets invoked by run(), runs the transformation and stores the result
-    def transform(v: Try[F], fn: FM[F] => TM[T]): Unit
+    final def transform(v: Try[F], fn: Try[F] => TM[T]): Unit = {
+      val r = fn(v)
+      if (r.isInstanceOf[Try[T]])
+        this.complete(r.asInstanceOf[Try[T]])
+      else if (r.isInstanceOf[Future[T]]) {
+        if (r.isInstanceOf[DefaultPromise[T]])
+          r.asInstanceOf[DefaultPromise[T]].linkRootOf(this)
+        else
+          this.completeWith(r.asInstanceOf[Future[T]])
+      } else if (r.isInstanceOf[T @unchecked])
+        this.success(r.asInstanceOf[T])
+    }
 
     // Gets invoked by the ExecutionContext, when we have a value to transform.
     // *Happens-before* 
@@ -400,31 +421,6 @@ private[future] final object Promise {
           case NonFatal(t) => this.failure(t)
         }
       }
-    }
-  }
-
-  final class MapPromise[F, T](f: F => T, ec: ExecutionContext) extends XformPromise[F, ({type Id[a] = a})#Id, ({type Id[a] = a})#Id, T](f, ec) {
-    override def transform(v: Try[F], fn: F => T): Unit = this complete { v map fn }
-  }
-
-  final class TransformPromise[F, T](f: Try[F] => Try[T], ec: ExecutionContext) extends XformPromise[F, Try, Try, T](f, ec) {
-    override def transform(v: Try[F], fn: Try[F] => Try[T]): Unit = this complete fn(v)
-  }
-
-  final class TransformWithPromise[F, T](f: Try[F] => Future[T], ec: ExecutionContext) extends XformPromise[F, Try, Future, T](f, ec) {
-    override def transform(v: Try[F], fn: Try[F] => Future[T]): Unit = {
-      val r = fn(v)
-      if (r.isInstanceOf[DefaultPromise[T]])
-        r.asInstanceOf[DefaultPromise[T]].linkRootOf(this)
-      else
-        this.completeWith(r)
-    }
-  }
-
-  final class EffectPromise[F](f: Try[F] => Any, ec: ExecutionContext) extends XformPromise[F, Try, ({type Id[a] = Any})#Id, Any](f, ec) {
-    override def transform(v: Try[F], fn: Try[F] => Any): Unit = {
-      fn(v)
-      this.success(())
     }
   }
 
