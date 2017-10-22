@@ -321,10 +321,19 @@ private[future] final object Promise {
         state.asInstanceOf[Link[T]].promise().dispatchOrAddCallbacks(callbacks)
     }
 
-    /** Link this promise to the root of another promise using `link()`. Should only be
-     *  be called by transformWith.
+    /** Link this promise to the root of another promise.
+     *  Should only be be called by transformWith.
      */
-    protected[future] final def linkRootOf(target: DefaultPromise[T]): Unit = link(new Link(target))
+    protected[future] final def linkRootOf(target: DefaultPromise[T]): Unit =
+      if (this ne target) {
+        val state = get()
+        if (state.isInstanceOf[Try[T]]) {
+          if (!target.tryComplete(state.asInstanceOf[Try[T]]))
+            throw new IllegalStateException("Cannot link completed promises together")
+        } else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].link(new Link(target))
+        else /*if (state.isInstanceOf[Callbacks[T]]) */
+          tryLink(state, new Link(target))
+      }
 
     /** Link this promise to another promise so that both promises share the same
      *  externally-visible state. Depending on the current state of this promise, this
@@ -334,23 +343,20 @@ private[future] final object Promise {
      *  If this promise is already completed, then the same effect as linking -
      *  sharing the same completed value - is achieved by simply sending this
      *  promise's result to the target promise.
+     *
+     *  Should only be called by linkRootOf().
      */
     @tailrec
-    private[this] final def link(target: Link[T]): Unit = {
+    private[this] final def tryLink(state: AnyRef, target: Link[T]): Unit = {
       val promise = target.promise()
       if (this ne promise) {
-        val state = get()
-        if (state.isInstanceOf[Try[T]]) {
-          if (!promise.tryComplete(state.asInstanceOf[Try[T]]))
-            throw new IllegalStateException("Cannot link completed promises together")
-        } else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].link(target)
-        else /*if (state.isInstanceOf[Callbacks[T]]) */ {
+        if (state.isInstanceOf[Callbacks[T]]) {
           if (compareAndSet(state, target)) {
             if (state ne NoopCallback)
               promise.dispatchOrAddCallbacks(state.asInstanceOf[Callbacks[T]])
-          } else link(target)
-        }
-      }
+          } else tryLink(get(), target) // Failed CAS, retry
+        } else linkRootOf(promise) // If the current state is not Callbacks, fall back to normal linking
+      } else ()
     }
   }
 
@@ -374,7 +380,7 @@ private[future] final object Promise {
       if (a.isInstanceOf[ExecutionContext]) {
         val executor = a.asInstanceOf[ExecutionContext]
         _arg = requireNonNull(v)
-        try executor.execute(this) catch { case NonFatal(t) => executor reportFailure t }
+        try executor.execute(this) catch { case NonFatal(t) => executor.reportFailure(t) }
       }
       this
     }
@@ -391,7 +397,7 @@ private[future] final object Promise {
         val fun = _fun
         _fun = null
         try transform(v.asInstanceOf[Try[F]], fun) catch {
-          case NonFatal(t) => this failure t
+          case NonFatal(t) => this.failure(t)
         }
       }
     }
@@ -408,8 +414,10 @@ private[future] final object Promise {
   final class TransformWithPromise[F, T](f: Try[F] => Future[T], ec: ExecutionContext) extends XformPromise[F, Try, Future, T](f, ec) {
     override def transform(v: Try[F], fn: Try[F] => Future[T]): Unit = {
       val r = fn(v)
-      if (r.isInstanceOf[DefaultPromise[T]]) r.asInstanceOf[DefaultPromise[T]].linkRootOf(this)
-      else this completeWith r
+      if (r.isInstanceOf[DefaultPromise[T]])
+        r.asInstanceOf[DefaultPromise[T]].linkRootOf(this)
+      else
+        this.completeWith(r)
     }
   }
 
@@ -440,8 +448,7 @@ private[future] final object Promise {
   // `p` is always either a ManyCallbacks or an XformCallback
   // `next` is always either a ManyCallbacks or an XformCallback
   final class ManyCallbacks[+T] private[ManyCallbacks](final val p: Callbacks[T], final val next: Callbacks[T]) extends Callbacks[T] {
-    final def this(second: XformCallback[T,_], first: XformCallback[T,_]) =
-      this(second: Callbacks[T], first: Callbacks[T])
+    final def this(second: XformCallback[T,_], first: XformCallback[T,_]) = this(second: Callbacks[T], first: Callbacks[T])
 
     override final def prepend[U >: T](c: Callbacks[U]): Callbacks[U] =
       if (c.isInstanceOf[XformCallback[U,_]]) prepend(c.asInstanceOf[XformCallback[U,_]])
@@ -450,17 +457,13 @@ private[future] final object Promise {
         new ManyCallbacks(mc, this)
       } else /* if (c eq NoopCallback) */this
 
-    final def prepend[U >: T](tp: XformCallback[U,_]): ManyCallbacks[U] = 
-      new ManyCallbacks(tp, this)
+    final def prepend[U >: T](tp: XformCallback[U,_]): ManyCallbacks[U] = new ManyCallbacks(tp, this)
 
-    final def append[U >: T](tp: XformCallback[U,_]): ManyCallbacks[U] =
-      new ManyCallbacks(this, tp)
+    final def append[U >: T](tp: XformCallback[U,_]): ManyCallbacks[U] = new ManyCallbacks(this, tp)
 
-    final def concat[U >: T](m: ManyCallbacks[U]): ManyCallbacks[U] =
-      new ManyCallbacks(this, m)
+    final def concat[U >: T](m: ManyCallbacks[U]): ManyCallbacks[U] = new ManyCallbacks(this, m)
 
-    override final def submitWithValue(v: Try[T @uncheckedVariance]): this.type =
-      submitWithValue(this, v)
+    override final def submitWithValue(v: Try[T @uncheckedVariance]): this.type = submitWithValue(this, v)
 
     @tailrec private[this] final def submitWithValue(cb: Callbacks[T], v: Try[T]): this.type =
       if (cb.isInstanceOf[ManyCallbacks[T]]) {
