@@ -254,8 +254,9 @@ private[future] final object Promise {
     @throws(classOf[TimeoutException])
     @throws(classOf[InterruptedException])
     final def ready(atMost: Duration)(implicit permit: CanAwait): this.type = {
-      result(atMost) // Throws TimeoutException if fails
-      this
+      val v = tryAwait0(atMost)
+      if (v ne null) this
+      else throw new TimeoutException("Future timed out after [" + atMost + "]")
     }
 
     @throws(classOf[Exception])
