@@ -396,9 +396,8 @@ private[future] final object Promise {
       this
     }
 
-    // Gets invoked by run(), runs the transformation and stores the result
-    final def transform(v: Try[F], fn: Try[F] => TM[T]): Unit = {
-      val r = fn(v)
+    // Gets invoked by run()
+    private[this] final def complete(r: TM[T]): Unit = {
       if (r.isInstanceOf[Try[T]])
         this.complete(r.asInstanceOf[Try[T]])
       else if (r.isInstanceOf[Future[T]]) {
@@ -411,18 +410,15 @@ private[future] final object Promise {
     }
 
     // Gets invoked by the ExecutionContext, when we have a value to transform.
-    // *Happens-before* 
-    override final def run(): Unit = {
-      val v = _arg
-      _arg = null
-      if (v.isInstanceOf[Try[F]]) {
-        val fun = _fun
-        _fun = null
-        try transform(v.asInstanceOf[Try[F]], fun) catch {
-          case NonFatal(t) => this.failure(t)
+    override final def run(): Unit =
+      // The invariant below should hold—is it required to test for?
+      /* if (v.isInstanceOf[Try[F]] && (fun ne null)) */
+        try complete(_fun(_arg.asInstanceOf[Try[F]])) catch {
+          case NonFatal(t) => this.tryFailure(t)
+        } finally {
+          _fun = null
+          _arg = null
         }
-      }
-    }
   }
 
   /* Encodes the concept of having callbacks.
@@ -465,7 +461,9 @@ private[future] final object Promise {
     @tailrec private[this] final def submitWithValue(cb: Callbacks[T], v: Try[T]): this.type =
       if (cb.isInstanceOf[ManyCallbacks[T]]) {
         val m = cb.asInstanceOf[ManyCallbacks[T]]
-        m.p.submitWithValue(v) // TODO: this will grow the stack—needs real-world proofing
+        // TODO: this will grow the stack—needs real-world proofing
+        // Possible solution is to go O(2N) and visit each leg of the graph separately
+        m.p.submitWithValue(v)
         submitWithValue(m.next, v)
       } else {
         cb.submitWithValue(v)
