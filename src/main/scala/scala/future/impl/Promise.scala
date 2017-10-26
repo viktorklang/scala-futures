@@ -316,7 +316,7 @@ private[future] final object Promise {
       }
 
     override final def onComplete[U](func: Try[T] => U)(implicit executor: ExecutionContext): Unit =
-      dispatchOrAddCallbacks(new XformPromise[T, ({type Id[a] = a})#Id, U](func, executor))
+      dispatchOrAddCallbacks(new XformPromise[T, ({type Id[+a] = a})#Id, U](func, executor))
 
     /** Tries to add the callback, if already completed, it dispatches the callback to be executed.
      *  Used by `onComplete()` to add callbacks to a promise and by `link()` to transfer callbacks
@@ -380,7 +380,7 @@ private[future] final object Promise {
     override final def toString: String = super[DefaultPromise].toString
   }
 
-  final class XformPromise[F, TM[_], T](f: Try[F] => TM[T], ec: ExecutionContext) extends XformCallback[F, T] {
+  final class XformPromise[F, -TM[+_], T](f: Try[F] => TM[T], ec: ExecutionContext) extends XformCallback[F, T] {
     private[this] final var _arg: AnyRef = ec.prepare() // Is first the EC -> then the value -> then null
     private[this] final var _fun: Try[F] => TM[T] = f // Is first the transformation function -> then null
 
