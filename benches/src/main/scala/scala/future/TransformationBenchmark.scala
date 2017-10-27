@@ -207,6 +207,36 @@ class VariousBenchmark extends OpBenchmark {
     f.map(mapFun).flatMap(improvedFlatMapFun).filter(filterFun).zipWith(f)((a, b) => a).transform(transformFun).recover(recoverFun)
 }
 
+class LoopBenchmark extends OpBenchmark {
+  val depth = 10
+  val size  = 1000
+
+  def pre_stdlib_loop(i: Int)(implicit ec: stdlib.ExecutionContext): stdlib.Future[Int] =
+    if (i % depth == 0) stdlib.Future.successful(i + 1).flatMap(pre_stdlib_loop)
+    else if (i < size) pre_stdlib_loop(i + 1).flatMap(stdlib.Future.successful)
+    else stdlib.Future.successful(i)
+
+  def pre_improved_loop(i: Int)(implicit ec: stdlib.ExecutionContext): improved.Future[Int] =
+    if (i % depth == 0) improved.Future.successful(i + 1).flatMap(pre_improved_loop)
+    else if (i < size) pre_improved_loop(i + 1).flatMap(improved.Future.successful)
+    else improved.Future.successful(i)
+
+  def post_stdlib_loop(i: Int)(implicit ec: stdlib.ExecutionContext): stdlib.Future[Int] =
+    if (i % depth == 0) stdlib.Future(i + 1).flatMap(post_stdlib_loop)
+    else if (i < size) post_stdlib_loop(i + 1).flatMap(i => stdlib.Future(i))
+    else stdlib.Future(i)
+
+  def post_improved_loop(i: Int)(implicit ec: stdlib.ExecutionContext): improved.Future[Int] =
+    if (i % depth == 0) improved.Future(i + 1).flatMap(post_improved_loop)
+    else if (i < size) post_improved_loop(i + 1).flatMap(i => improved.Future(i))
+    else improved.Future(i)
+
+  override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+    if (isCompleted) f.flatMap(s => pre_stdlib_loop(100).map(_ => s)) else f.flatMap(s => pre_stdlib_loop(100).map(_ => s))
+
+  override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+    if (isCompleted) f.flatMap(s => pre_improved_loop(100).map(_ => s)) else f.flatMap(s => pre_improved_loop(100).map(_ => s))
+}
 
 /*class ZipBenchmark extends OpBenchmark {
   override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
