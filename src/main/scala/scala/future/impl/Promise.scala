@@ -21,7 +21,6 @@ import java.util.concurrent.locks.AbstractQueuedSynchronizer
 import java.util.concurrent.atomic.AtomicReference
 import java.util.Objects.requireNonNull
 
-
 private[future] final object Promise {
    /**
     * Latch used to implement waiting on a DefaultPromise's result.
@@ -84,90 +83,29 @@ private[future] final object Promise {
       }
     }
 
+    private[this] final def resolve[T](value: Try[T]): Try[T] =
+      if (requireNonNull(value).isInstanceOf[Success[T]]) value
+      else {
+        val t = value.asInstanceOf[Failure[T]].exception
+        if (t.isInstanceOf[ControlThrowable] || t.isInstanceOf[InterruptedException] || t.isInstanceOf[Error]) {
+          if (t.isInstanceOf[NonLocalReturnControl[T @unchecked]])
+            Success(t.asInstanceOf[NonLocalReturnControl[T]].value)
+          else
+            Failure(new ExecutionException("Boxed Exception", t))
+        } else value
+      }
 
-  /** Default promise implementation.
-   *
-   *  A DefaultPromise has three possible states. It can be:
-   *
-   *  1. Incomplete, with an associated list of callbacks waiting on completion.
-   *  2. Complete, with a result.
-   *  3. Linked to another DefaultPromise.
-   *
-   *  If a DefaultPromise is linked to another DefaultPromise, it will
-   *  delegate all its operations to that other promise. This means that two
-   *  DefaultPromises that are linked will appear, to external callers, to have
-   *  exactly the same state and behaviour. For instance, both will appear as
-   *  incomplete, or as complete with the same result value.
-   *
-   *  A DefaultPromise stores its state entirely in the AnyRef cell exposed by
-   *  AtomicReference. The type of object stored in the cell fully describes the
-   *  current state of the promise.
-   *
-   *  1. Callbacks - The promise is incomplete and has zero or more callbacks
-   *     to call when it is eventually completed.
-   *  2. Try[T] - The promise is complete and now contains its value.
-   *  3. DefaultPromise[T] - The promise is linked to another promise.
-   *
-   * The ability to link DefaultPromises is needed to prevent memory leaks when
-   * using Future.flatMap. The previous implementation of Future.flatMap used
-   * onComplete handlers to propagate the ultimate value of a flatMap operation
-   * to its promise. Recursive calls to flatMap built a chain of onComplete
-   * handlers and promises. Unfortunately none of the handlers or promises in
-   * the chain could be collected until the handlers had been called and
-   * detached, which only happened when the final flatMap future was completed.
-   * (In some situations, such as infinite streams, this would never actually
-   * happen.) Because of the fact that the promise implementation internally
-   * created references between promises, and these references were invisible to
-   * user code, it was easy for user code to accidentally build large chains of
-   * promises and thereby leak memory.
-   *
-   * The problem of leaks is solved by automatically breaking these chains of
-   * promises, so that promises don't refer to each other in a long chain. This
-   * allows each promise to be individually collected. The idea is to "flatten"
-   * the chain of promises, so that instead of each promise pointing to its
-   * neighbour, they instead point directly the promise at the root of the
-   * chain. This means that only the root promise is referenced, and all the
-   * other promises are available for garbage collection as soon as they're no
-   * longer referenced by user code.
-   *
-   * To make the chains flattenable, the concept of linking promises together
-   * needed to become an explicit feature of the DefaultPromise implementation,
-   * so that the implementation to navigate and rewire links as needed. The idea
-   * of linking promises is based on the [[Twitter promise implementation
-   * https://github.com/twitter/util/blob/master/util-core/src/main/scala/com/twitter/util/Promise.scala]].
-   *
-   * In practice, flattening the chain cannot always be done perfectly. When a
-   * promise is added to the end of the chain, it scans the chain and links
-   * directly to the root promise. This prevents the chain from growing forwards
-   * But the root promise for a chain can change, causing the chain to grow
-   * backwards, and leaving all previously-linked promise pointing at a promise
-   * which is no longer the root promise.
-   *
-   * To mitigate the problem of the root promise changing, whenever a promise's
-   * methods are called, and it needs a reference to its root promise it calls
-   * the `promise()` method on its Link. This method re-scans the promise chain to
-   * get the root promise, and also compresses its links so that it links
-   * directly to whatever the current root promise is. This ensures that the
-   * chain is flattened whenever `promise()` is called. And since
-   * `promise()` is called at every possible opportunity (when getting a
-   * promise's value, when adding an onComplete handler, etc), this will happen
-   * frequently. Unfortunately, even this eager relinking doesn't absolutely
-   * guarantee that the chain will be flattened and that leaks cannot occur.
-   * However eager relinking does greatly reduce the chance that leaks will
-   * occur.
-   *
-   * Future.flatMap/recoverWith/transformWith links DefaultPromises together by calling the `linkRootOf`
-   * method. This is the only externally visible interface to linked DefaultPromises.
-   */
   // Left non-final to enable addition of extra fields by Java/Scala converters in scala-java8-compat.
-  class DefaultPromise[T] extends AtomicReference[AnyRef](NoopCallback: AnyRef) with scala.future.Promise[T] with scala.future.Future[T] {
+  class DefaultPromise[T] private[this] (initial: AnyRef) extends AtomicReference[AnyRef](initial) with scala.future.Promise[T] with scala.future.Future[T] {
     /**
      * Constructs a new, completed, Promise.
      */
-    def this(result: Try[T]) = {
-      this() // TODO: avoid the initial NoopCallback write and directly write the resolve(result)
-      set(resolve(result))
-    }
+    def this(result: Try[T]) = this(resolve(result): AnyRef)
+
+    /**
+     * Constructs a new, un-completed, Promise.
+     */
+    def this() = this(NoopCallback: AnyRef)
 
     /**
      * Returns the associaed `Future` with this `Promise`
@@ -193,10 +131,9 @@ private[future] final object Promise {
       if (!value0.isInstanceOf[Failure[T]]) super[Future].flatMap(f) // Short-circuit if we get a Success
       else this.asInstanceOf[Future[S]]
 
-    override def map[S](f: T => S)(implicit executor: ExecutionContext): Future[S] = {
+    override def map[S](f: T => S)(implicit executor: ExecutionContext): Future[S] =
       if (!value0.isInstanceOf[Failure[T]]) super[Future].map(f) // Short-circuit if we get a Success
       else this.asInstanceOf[Future[S]]
-    }
 
     override def filter(@deprecatedName('pred) p: T => Boolean)(implicit executor: ExecutionContext): Future[T] =
       if (!value0.isInstanceOf[Failure[T]]) super[Future].filter(p) // Short-circuit if we get a Success
@@ -278,42 +215,28 @@ private[future] final object Promise {
       else /*if (state.isInstanceOf[Callbacks[T]])*/ null
     }
 
-    private[this] final def resolve(value: Try[T]): Try[T] =
-      if (requireNonNull(value).isInstanceOf[Success[T]]) value
-      else {
-        val t = value.asInstanceOf[Failure[T]].exception
-        if (t.isInstanceOf[ControlThrowable] || t.isInstanceOf[InterruptedException] || t.isInstanceOf[Error]) {
-          if (t.isInstanceOf[NonLocalReturnControl[T @unchecked]])
-            Success(t.asInstanceOf[NonLocalReturnControl[T]].value)
-          else
-            Failure(new ExecutionException("Boxed Exception", t))
-        } else value
-      }
-
     override final def tryComplete(value: Try[T]): Boolean = {
       val state = get()
       if (state.isInstanceOf[Try[T]]) false
-      else if (state.isInstanceOf[Callbacks[T]]) tryComplete0(state, resolve(value))
       else /*if (state.isInstaceOf[Link[T]]*/ {
         val r = tryComplete0(state, resolve(value))
-        state.asInstanceOf[Link[T]].unlink(this)
+        if (state.isInstanceOf[Link[T]])
+          state.asInstanceOf[Link[T]].unlink(this)
         r
       }
     }
 
     @tailrec
     private final def tryComplete0(state: AnyRef, resolved: Try[T]): Boolean =
-      if (state.isInstanceOf[Try[T]]) false
-      else if (state.isInstanceOf[Callbacks[T]]) {
+      if (state.isInstanceOf[Callbacks[T]]) {
         if (compareAndSet(state, resolved)) {
           state.asInstanceOf[Callbacks[T]].submitWithValue(resolved)
           true
         } else tryComplete0(get(), resolved)
-      }
-      else /*if (state.isInstanceOf[Link[T]])*/ {
+      } else if (state.isInstanceOf[Link[T]]) {
         val p = state.asInstanceOf[Link[T]].promise()
         p.tryComplete0(p.get(), resolved) // Use this to get tailcall optimization and avoid re-resolution
-      }
+      } else /* if(state.isInstanceOf[Try[T]]) */ false
 
     override final def onComplete[U](func: Try[T] => U)(implicit executor: ExecutionContext): Unit =
       dispatchOrAddCallbacks(new XformPromise[T, ({type Id[+a] = a})#Id, U](func, executor))
@@ -422,7 +345,6 @@ private[future] final object Promise {
   }
 
   /* Encodes the concept of having callbacks.
-   * This is an `abstract class` to make sure calls are `invokevirtual` rather than `invokeinterface`
    */
   sealed trait Callbacks[+T] {
     def prepend[U >: T](c: Callbacks[U]): Callbacks[U]
@@ -430,7 +352,6 @@ private[future] final object Promise {
   }
 
   /* Represents 0 Callbacks, is used as an initial, sentinel, value for DefaultPromise
-   * This used to be a `case object` but in order to keep `Callbacks`'s methods bimorphic it was reencoded as `val`
    */
   final object NoopCallback extends Callbacks[Nothing] {
     override final def prepend[U >: Nothing](c: Callbacks[U]): Callbacks[U] = c

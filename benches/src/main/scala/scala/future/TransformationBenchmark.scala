@@ -10,7 +10,7 @@ import scala.{future => improved}
 
 @State(Scope.Benchmark)
 @BenchmarkMode(Array(Mode.Throughput))
-@OutputTimeUnit(TimeUnit.SECONDS)
+@OutputTimeUnit(TimeUnit.MICROSECONDS)
 @Warmup(iterations = 1000)
 @Measurement(iterations = 10000)
 @Fork(value = 1, jvmArgsAppend = Array("-ea","-server","-XX:+UseCompressedOops","-XX:+AggressiveOpts","-XX:+AlwaysPreTouch", "-XX:+UseCondCardMark"))

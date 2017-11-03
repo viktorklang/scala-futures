@@ -92,7 +92,7 @@ class CompletionBenchmark {
   @OperationsPerInvocation(1)
   final def tryComplete_1 = benchFun(1)
 
-  @Benchmark
+  /*@Benchmark
   @OperationsPerInvocation(2)
   final def tryComplete_2 = benchFun(2)
 
@@ -110,7 +110,7 @@ class CompletionBenchmark {
 
   @Benchmark
   @OperationsPerInvocation(1024)
-  final def tryComplete_1024 = benchFun(1024)
+  final def tryComplete_1024 = benchFun(1024)*/
 
   @Benchmark
   @OperationsPerInvocation(8192)
