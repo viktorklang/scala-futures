@@ -295,18 +295,16 @@ private[future] final object Promise {
     }
   }
 
-  sealed abstract class XformCallback[+F, T] extends DefaultPromise[T]() with Callbacks[F] with Runnable with OnCompleteRunnable {
+  type XformCallback[F] = XformPromise[F, Nothing, _]
+
+  final class XformPromise[+F, -TM[+_], T](f: Try[F] => TM[T], ec: ExecutionContext) extends DefaultPromise[T]() with Callbacks[F] with Runnable with OnCompleteRunnable {
     override final def prepend[U >: F](c: Callbacks[U]): Callbacks[U] =
-      if (c.isInstanceOf[XformCallback[U,_]]) new ManyCallbacks(c.asInstanceOf[XformCallback[U,_]], this)
+      if (c.isInstanceOf[XformCallback[U] @unchecked]) new ManyCallbacks[U](c.asInstanceOf[XformCallback[U]], this)
       else if (c.isInstanceOf[ManyCallbacks[U]]) c.asInstanceOf[ManyCallbacks[U]].append(this)
       else /*if (c eq Promise.NoopCallback)*/ this
 
     override final def toString: String = super[DefaultPromise].toString
-  }
 
-  type Foo[F, T] = XformPromise[F, Nothing, T]
-
-  final class XformPromise[F, -TM[+_], T](f: Try[F] => TM[T], ec: ExecutionContext) extends XformCallback[F, T] {
     private[this] final var _arg: AnyRef = ec.prepare() // Is first the EC -> then the value -> then null
     private[this] final var _fun: Try[F] => TM[T] = f // Is first the transformation function -> then null
 
@@ -329,6 +327,7 @@ private[future] final object Promise {
     }
 
     // Gets invoked by run()
+    // TODO: consider different encoding where result handling is tableswitched iso branched
     private[this] final def complete(r: TM[T]): Unit = {
       if (r.isInstanceOf[Try[T]])
         this.complete(r.asInstanceOf[Try[T]])
@@ -372,20 +371,20 @@ private[future] final object Promise {
   // `p` is always either a ManyCallbacks or an XformCallback
   // `next` is always either a ManyCallbacks or an XformCallback
   final class ManyCallbacks[+T] private[ManyCallbacks](final val p: Callbacks[T], final val next: Callbacks[T]) extends Callbacks[T] {
-    final def this(second: XformCallback[T,_], first: XformCallback[T,_]) = this(second: Callbacks[T], first: Callbacks[T])
+    final def this(second: XformCallback[T], first: XformCallback[T]) = this(second: Callbacks[T], first: Callbacks[T])
 
     override final def prepend[U >: T](c: Callbacks[U]): Callbacks[U] =
-      if (c.isInstanceOf[XformCallback[U,_]]) prepend(c.asInstanceOf[XformCallback[U,_]])
+      if (c.isInstanceOf[XformCallback[T] @unchecked]) prepend(c.asInstanceOf[XformCallback[T]])
       else if (c.isInstanceOf[ManyCallbacks[U]]) {
         val mc = c.asInstanceOf[ManyCallbacks[U]]
         new ManyCallbacks(mc, this)
       } else /* if (c eq NoopCallback) */this
 
-    final def prepend[U >: T](tp: XformCallback[U,_]): ManyCallbacks[U] = new ManyCallbacks(tp, this)
+    final def prepend[U >: T](tp: XformCallback[U]): ManyCallbacks[U] = new ManyCallbacks[U](tp, this)
 
-    final def append[U >: T](tp: XformCallback[U,_]): ManyCallbacks[U] = new ManyCallbacks(this, tp)
+    final def append[U >: T](tp: XformCallback[U]): ManyCallbacks[U] = new ManyCallbacks[U](this, tp)
 
-    final def concat[U >: T](m: ManyCallbacks[U]): ManyCallbacks[U] = new ManyCallbacks(this, m)
+    final def concat[U >: T](m: ManyCallbacks[U]): ManyCallbacks[U] = new ManyCallbacks[U](this, m)
 
     override final def submitWithValue(v: Try[T @uncheckedVariance]): this.type = submitWithValue(this, v)
 
