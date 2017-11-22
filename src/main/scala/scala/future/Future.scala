@@ -657,7 +657,7 @@ object Future {
     override def toString: String = "Future(<never>)"
   }
 
-  /** A Future which is always completed with the Unit value.
+  /** A Future which is completed with the Unit value.
    */
   final val unit: Future[Unit] = successful(())
 
@@ -692,6 +692,7 @@ object Future {
   *  {{{
   *  val f1 = Future(expr)
   *  val f2 = Future.unit.map(_ => expr)
+  *  val f3 = Future.unit.transform(_ => Success(expr))
   *  }}}
   *
   *  The result becomes available once the asynchronous computation is completed.
@@ -702,10 +703,27 @@ object Future {
   *  @return          the `Future` holding the result of the computation
   */
   def apply[T](body: =>T)(implicit @deprecatedName('execctx) executor: ExecutionContext): Future[T] =
-    unit.transform {
-      r => if (r.isInstanceOf[Success[T @unchecked]]) Success(body)
-           else r.asInstanceOf[Failure[T]]
-    }
+    unit.transform { _ => Success(body) }
+
+  /** Starts an asynchronous computation and returns a `Future` instance with the result of that computation once it completes.
+  *
+  *  The following expressions are semantically equivalent:
+  *
+  *  {{{
+  *  val f1 = Future(expr).flatten
+  *  val f2 = Future.defer(expr)
+  *  val f3 = Future.unit.flatMap(_ => expr)
+  *  }}}
+  *
+  *  The result becomes available once the resulting Future of the asynchronous computation is completed.
+  *
+  *  @tparam T        the type of the result
+  *  @param body      the asynchronous computation, returning a Future
+  *  @param executor  the execution context on which the `body` is evaluated in
+  *  @return          the `Future` holding the result of the computation
+  */
+  def defer[T](body: => Future[T])(implicit executor: ExecutionContext): Future[T] =
+    unit.transformWith { _ => body }
 
   /** Simple version of `Future.traverse`. Asynchronously and non-blockingly transforms a `TraversableOnce[Future[A]]`
    *  into a `Future[TraversableOnce[A]]`. Useful for reducing many `Future`s into a single `Future`.
@@ -753,14 +771,11 @@ object Future {
       val result = Promise[Option[T]]()
       val ref = new AtomicInteger(futuresBuffer.size)
       val search: Try[T] => Unit = v => try {
-        v match {
-          case Success(r) if p(r) => result tryComplete Success(Some(r))
-          case _ =>
-        }
+        if (v.isSuccess && p(v.get))
+          result.trySuccess(v.toOption)
       } finally {
-        if (ref.decrementAndGet == 0) {
-          result tryComplete Success(None)
-        }
+        if (ref.decrementAndGet == 0)
+          result.trySuccess(None)
       }
 
       futuresBuffer.foreach(_ onComplete search)
@@ -916,11 +931,9 @@ object Future {
   // by just not ever using it itself. scala.concurrent
   // doesn't need to create defaultExecutionContext as
   // a side effect.
-  private[future] final object InternalCallbackExecutor extends ExecutionContext with BatchingExecutor {
-    override protected def unbatchedExecute(r: Runnable): Unit =
-      r.run()
-    override def reportFailure(t: Throwable): Unit =
-      throw new IllegalStateException("problem in scala.concurrent internal callback", t)
+  private[future] final object InternalCallbackExecutor extends ExecutionContext with java.util.concurrent.Executor with BatchingExecutor {
+    override protected def unbatchedExecute(r: Runnable): Unit = r.run()
+    override def reportFailure(t: Throwable): Unit = ExecutionContext.defaultReporter(t)
   }
 }
 

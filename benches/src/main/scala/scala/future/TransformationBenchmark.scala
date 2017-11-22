@@ -10,13 +10,13 @@ import scala.{future => improved}
 
 @State(Scope.Benchmark)
 @BenchmarkMode(Array(Mode.Throughput))
-@OutputTimeUnit(TimeUnit.MICROSECONDS)
+@OutputTimeUnit(TimeUnit.MILLISECONDS)
 @Warmup(iterations = 1000)
 @Measurement(iterations = 10000)
 @Fork(value = 1, jvmArgsAppend = Array("-ea","-server","-XX:+UseCompressedOops","-XX:+AggressiveOpts","-XX:+AlwaysPreTouch", "-XX:+UseCondCardMark"))
 abstract class AbstractBaseBenchmark {
 
-  @Param(Array[String]("fjp", "fix"))
+  @Param(Array[String]("fjp", "fix", "fie"))
   var pool: String = _
 
   @Param(Array[String]("1"))
@@ -39,6 +39,7 @@ abstract class AbstractBaseBenchmark {
     executor = pool match {
       case "fjp" => new java.util.concurrent.ForkJoinPool(threads)
       case "fix" => java.util.concurrent.Executors.newFixedThreadPool(threads)
+      case "fie" => scala.future.Future.InternalCallbackExecutor
     }
 
     isCompleted = completed match {

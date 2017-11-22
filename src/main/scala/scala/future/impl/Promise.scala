@@ -10,8 +10,8 @@ package scala.future.impl
 import scala.concurrent.{ExecutionContext, CanAwait, TimeoutException, ExecutionException }
 import scala.future.{ Future, OnCompleteRunnable }
 import scala.future.Future.InternalCallbackExecutor
-import scala.concurrent.duration.{ Duration, FiniteDuration }
-import scala.annotation.{ tailrec, switch, unchecked }
+import scala.concurrent.duration.Duration
+import scala.annotation.{ tailrec, unchecked }
 import scala.annotation.unchecked.uncheckedVariance
 import scala.util.control.{ NonFatal, ControlThrowable }
 import scala.util.{ Try, Success, Failure }
@@ -83,6 +83,7 @@ private[future] final object Promise {
       }
     }
 
+    // requireNonNull is paramount to guard against null completions
     private[this] final def resolve[T](value: Try[T]): Try[T] =
       if (requireNonNull(value).isInstanceOf[Success[T]]) value
       else {
@@ -288,9 +289,9 @@ private[future] final object Promise {
           if (compareAndSet(state, target)) {
             if (state ne NoopCallback)
               promise.dispatchOrAddCallbacks(state.asInstanceOf[Callbacks[T]])
-          } else tryLink(get(), target) // Failed CAS, retry
+          } else tryLink(get(), target)
         } else linkRootOf(promise) // If the current state is not Callbacks, fall back to normal linking
-      } else ()
+      }
     }
   }
 
@@ -303,6 +304,8 @@ private[future] final object Promise {
     override final def toString: String = super[DefaultPromise].toString
   }
 
+  type Foo[F, T] = XformPromise[F, Nothing, T]
+
   final class XformPromise[F, -TM[+_], T](f: Try[F] => TM[T], ec: ExecutionContext) extends XformCallback[F, T] {
     private[this] final var _arg: AnyRef = ec.prepare() // Is first the EC -> then the value -> then null
     private[this] final var _fun: Try[F] => TM[T] = f // Is first the transformation function -> then null
@@ -313,8 +316,14 @@ private[future] final object Promise {
       val a = _arg
       if (a.isInstanceOf[ExecutionContext]) {
         val executor = a.asInstanceOf[ExecutionContext]
-        _arg = requireNonNull(v)
-        try executor.execute(this) catch { case NonFatal(t) => executor.reportFailure(t) }
+        _arg = v // requireNonNull(v) will hold as guarded by `resolve`
+        try
+          executor.execute(this)
+        catch {
+          case NonFatal(t) =>
+            if (!this.tryFailure(t)) // If we can't propagate, then report
+              ec.reportFailure(t)
+        }
       }
       this
     }
@@ -330,6 +339,7 @@ private[future] final object Promise {
           this.completeWith(r.asInstanceOf[Future[T]])
       } else if (r.isInstanceOf[T @unchecked])
         this.success(r.asInstanceOf[T])
+      // else throw new IllegalStateException("Result value of type ${r.getClass} not valid")
     }
 
     // Gets invoked by the ExecutionContext, when we have a value to transform.
