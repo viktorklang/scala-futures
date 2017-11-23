@@ -252,12 +252,23 @@ private[future] final object Promise {
       val state = get()
       if (state.isInstanceOf[Try[T]]) callbacks.submitWithValue(state.asInstanceOf[Try[T]])
       else if ((state eq null) || state.isInstanceOf[Callbacks[T]]) {
-        val newCallbacks = if (state eq null) callbacks else state.asInstanceOf[Callbacks[T]] prepend callbacks
-        if(compareAndSet(state, newCallbacks)) callbacks
+        if(compareAndSet(state, prependCallbacks(state.asInstanceOf[Callbacks[T]], callbacks))) callbacks
         else dispatchOrAddCallbacks(callbacks)
       } else /*if (state.isInstanceOf[Link[T]])*/
         state.asInstanceOf[Link[T]].promise().dispatchOrAddCallbacks(callbacks)
     }
+
+    private[this] final def prependCallbacks(old: Callbacks[T], add: Callbacks[T]): Callbacks[T] =
+      if (old eq null) add
+      else if (old.isInstanceOf[XformCallback[T]]) {
+        val xc = old.asInstanceOf[XformCallback[T]]
+        if (add.isInstanceOf[ManyCallbacks[T]]) add.asInstanceOf[ManyCallbacks[T]].append(xc)
+        else /*if (add.isInstanceOf[XformCallback[T]])*/ new ManyCallbacks[T](add.asInstanceOf[XformCallback[T]], xc)
+      } else /*if (old.isInstanceOf[ManyCallbacks[T]])*/ {
+        val mc = old.asInstanceOf[ManyCallbacks[T]]
+        if (add.isInstanceOf[XformCallback[T]]) mc.prepend(add.asInstanceOf[XformCallback[T]])
+        else /* if(add.isInstanceOf[ManyCallbacks[T]]) */ add.asInstanceOf[ManyCallbacks[T]].concat(mc)
+      }
 
     /** Link this promise to the root of another promise.
      *  Should only be be called by transformWith.
@@ -349,30 +360,19 @@ private[future] final object Promise {
           _arg = null
         }
 
-    override final def prepend[U <: F](c: Callbacks[U]): Callbacks[U] =
-      if (c.isInstanceOf[XformCallback[U]]) new ManyCallbacks[U](c.asInstanceOf[XformCallback[U]], this)
-      else if (c.isInstanceOf[ManyCallbacks[U]]) c.asInstanceOf[ManyCallbacks[U]].append(this)
-      else /*if (c eq null)*/ this
-
     override final def toString: String = super[DefaultPromise].toString
   }
 
   /* Encodes the concept of having callbacks.
    */
   sealed trait Callbacks[-T] {
-    def prepend[U <: T](c: Callbacks[U]): Callbacks[U]
     def submitWithValue(v: Try[T]): this.type
   }
 
   // `p` is always either a ManyCallbacks or an XformCallback
   // `next` is always either a ManyCallbacks or an XformCallback
   final class ManyCallbacks[-T] private[ManyCallbacks](final val p: Callbacks[T], final val next: Callbacks[T]) extends Callbacks[T] {
-    final def this(second: XformCallback[T], first: XformCallback[T]) = this(second: Callbacks[T], first: Callbacks[T])
-
-    override final def prepend[U <: T](c: Callbacks[U]): Callbacks[U] =
-      if (c.isInstanceOf[XformCallback[T]]) prepend(c.asInstanceOf[XformCallback[T]])
-      else if (c.isInstanceOf[ManyCallbacks[U]]) c.asInstanceOf[ManyCallbacks[U]].concat(this)
-      else /* if (c eq null) */this
+    final def this(head: XformCallback[T], tail: XformCallback[T]) = this(head: Callbacks[T], tail: Callbacks[T])
 
     final def prepend[U <: T](tp: XformCallback[U]): ManyCallbacks[U] = new ManyCallbacks[U](tp, this)
 
