@@ -12,7 +12,6 @@ import scala.future.{ Future, OnCompleteRunnable }
 import scala.future.Future.InternalCallbackExecutor
 import scala.concurrent.duration.Duration
 import scala.annotation.{ tailrec, unchecked }
-import scala.annotation.unchecked.uncheckedVariance
 import scala.util.control.{ NonFatal, ControlThrowable }
 import scala.util.{ Try, Success, Failure }
 import scala.runtime.NonLocalReturnControl
@@ -106,7 +105,7 @@ private[future] final object Promise {
     /**
      * Constructs a new, un-completed, Promise.
      */
-    def this() = this(NoopCallback: AnyRef)
+    def this() = this(null: AnyRef)
 
     /**
      * Returns the associaed `Future` with this `Promise`
@@ -162,7 +161,7 @@ private[future] final object Promise {
       val state = get()
       if (state.isInstanceOf[Try[T]]) "Future("+state+")"
       else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].promise().toString0
-      else /*if (state.isInstanceOf[Callbacks[T]]) */ "Future(<not completed>)"
+      else /*if ((state eq null) || state.isInstanceOf[Callbacks[T]]) */ "Future(<not completed>)"
     }
 
     /** Try waiting for this promise to be completed.
@@ -213,7 +212,7 @@ private[future] final object Promise {
       val state = get()
       if (state.isInstanceOf[Try[T]]) state.asInstanceOf[Try[T]]
       else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].promise().value0
-      else /*if (state.isInstanceOf[Callbacks[T]])*/ null
+      else /*if ((state eq null) || state.isInstanceOf[Callbacks[T]])*/ null
     }
 
     override final def tryComplete(value: Try[T]): Boolean = {
@@ -228,16 +227,19 @@ private[future] final object Promise {
     }
 
     @tailrec
-    private final def tryComplete0(state: AnyRef, resolved: Try[T]): Boolean =
-      if (state.isInstanceOf[Callbacks[T]]) {
+    private final def tryComplete0(state: AnyRef, resolved: Try[T]): Boolean = {
+      val Noop = state eq null
+      if (Noop || state.isInstanceOf[Callbacks[T]]) {
         if (compareAndSet(state, resolved)) {
-          state.asInstanceOf[Callbacks[T]].submitWithValue(resolved)
+          if (Noop) ()
+          else state.asInstanceOf[Callbacks[T]].submitWithValue(resolved)
           true
         } else tryComplete0(get(), resolved)
       } else if (state.isInstanceOf[Link[T]]) {
         val p = state.asInstanceOf[Link[T]].promise()
         p.tryComplete0(p.get(), resolved) // Use this to get tailcall optimization and avoid re-resolution
       } else /* if(state.isInstanceOf[Try[T]]) */ false
+    }
 
     override final def onComplete[U](func: Try[T] => U)(implicit executor: ExecutionContext): Unit =
       dispatchOrAddCallbacks(new XformPromise[T, ({type Id[+a] = a})#Id, U](func, executor))
@@ -249,8 +251,9 @@ private[future] final object Promise {
     @tailrec private final def dispatchOrAddCallbacks[C <: Callbacks[T]](callbacks: C): C = {
       val state = get()
       if (state.isInstanceOf[Try[T]]) callbacks.submitWithValue(state.asInstanceOf[Try[T]])
-      else if (state.isInstanceOf[Callbacks[T]]) {
-        if(compareAndSet(state, state.asInstanceOf[Callbacks[T]] prepend callbacks)) callbacks
+      else if ((state eq null) || state.isInstanceOf[Callbacks[T]]) {
+        val newCallbacks = if (state eq null) callbacks else state.asInstanceOf[Callbacks[T]] prepend callbacks
+        if(compareAndSet(state, newCallbacks)) callbacks
         else dispatchOrAddCallbacks(callbacks)
       } else /*if (state.isInstanceOf[Link[T]])*/
         state.asInstanceOf[Link[T]].promise().dispatchOrAddCallbacks(callbacks)
@@ -266,7 +269,7 @@ private[future] final object Promise {
           if (!target.tryComplete(state.asInstanceOf[Try[T]]))
             throw new IllegalStateException("Cannot link completed promises together")
         } else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].link(new Link(target))
-        else /*if (state.isInstanceOf[Callbacks[T]]) */
+        else /*if ((state eq null) || state.isInstanceOf[Callbacks[T]]) */
           tryLink(state, new Link(target))
       }
 
@@ -285,9 +288,10 @@ private[future] final object Promise {
     private[this] final def tryLink(state: AnyRef, target: Link[T]): Unit = {
       val promise = target.promise()
       if (this ne promise) {
-        if (state.isInstanceOf[Callbacks[T]]) {
+        val Noop = state eq null
+        if (Noop || state.isInstanceOf[Callbacks[T]]) {
           if (compareAndSet(state, target)) {
-            if (state ne NoopCallback)
+            if (!Noop)
               promise.dispatchOrAddCallbacks(state.asInstanceOf[Callbacks[T]])
           } else tryLink(get(), target)
         } else linkRootOf(promise) // If the current state is not Callbacks, fall back to normal linking
@@ -295,22 +299,15 @@ private[future] final object Promise {
     }
   }
 
-  type XformCallback[F] = XformPromise[F, Nothing, _]
+  type XformCallback[-F] = XformPromise[F, Nothing, _]
 
-  final class XformPromise[+F, -TM[+_], T](f: Try[F] => TM[T], ec: ExecutionContext) extends DefaultPromise[T]() with Callbacks[F] with Runnable with OnCompleteRunnable {
-    override final def prepend[U >: F](c: Callbacks[U]): Callbacks[U] =
-      if (c.isInstanceOf[XformCallback[U] @unchecked]) new ManyCallbacks[U](c.asInstanceOf[XformCallback[U]], this)
-      else if (c.isInstanceOf[ManyCallbacks[U]]) c.asInstanceOf[ManyCallbacks[U]].append(this)
-      else /*if (c eq Promise.NoopCallback)*/ this
-
-    override final def toString: String = super[DefaultPromise].toString
-
+  final class XformPromise[-F, -TM[+_], T](f: Try[F] => TM[T], ec: ExecutionContext) extends DefaultPromise[T]() with Callbacks[F] with Runnable with OnCompleteRunnable {
     private[this] final var _arg: AnyRef = ec.prepare() // Is first the EC -> then the value -> then null
     private[this] final var _fun: Try[F] => TM[T] = f // Is first the transformation function -> then null
 
     // Gets invoked when a value is available, schedules it to be run():ed by the ExecutionContext
     // submitWithValue *happens-before* run(), through ExecutionContext.execute.
-    override final def submitWithValue(v: Try[F @uncheckedVariance]): this.type = {
+    override final def submitWithValue(v: Try[F]): this.type = {
       val a = _arg
       if (a.isInstanceOf[ExecutionContext]) {
         val executor = a.asInstanceOf[ExecutionContext]
@@ -351,42 +348,39 @@ private[future] final object Promise {
           _fun = null
           _arg = null
         }
+
+    override final def prepend[U <: F](c: Callbacks[U]): Callbacks[U] =
+      if (c.isInstanceOf[XformCallback[U]]) new ManyCallbacks[U](c.asInstanceOf[XformCallback[U]], this)
+      else if (c.isInstanceOf[ManyCallbacks[U]]) c.asInstanceOf[ManyCallbacks[U]].append(this)
+      else /*if (c eq null)*/ this
+
+    override final def toString: String = super[DefaultPromise].toString
   }
 
   /* Encodes the concept of having callbacks.
    */
-  sealed trait Callbacks[+T] {
-    def prepend[U >: T](c: Callbacks[U]): Callbacks[U]
-    def submitWithValue(v: Try[T @uncheckedVariance]): this.type
-  }
-
-  /* Represents 0 Callbacks, is used as an initial, sentinel, value for DefaultPromise
-   */
-  final object NoopCallback extends Callbacks[Nothing] {
-    override final def prepend[U >: Nothing](c: Callbacks[U]): Callbacks[U] = c
-    override final def submitWithValue(v: Try[Nothing]): this.type = this
-    override final def toString: String = "Noop"
+  sealed trait Callbacks[-T] {
+    def prepend[U <: T](c: Callbacks[U]): Callbacks[U]
+    def submitWithValue(v: Try[T]): this.type
   }
 
   // `p` is always either a ManyCallbacks or an XformCallback
   // `next` is always either a ManyCallbacks or an XformCallback
-  final class ManyCallbacks[+T] private[ManyCallbacks](final val p: Callbacks[T], final val next: Callbacks[T]) extends Callbacks[T] {
+  final class ManyCallbacks[-T] private[ManyCallbacks](final val p: Callbacks[T], final val next: Callbacks[T]) extends Callbacks[T] {
     final def this(second: XformCallback[T], first: XformCallback[T]) = this(second: Callbacks[T], first: Callbacks[T])
 
-    override final def prepend[U >: T](c: Callbacks[U]): Callbacks[U] =
-      if (c.isInstanceOf[XformCallback[T] @unchecked]) prepend(c.asInstanceOf[XformCallback[T]])
-      else if (c.isInstanceOf[ManyCallbacks[U]]) {
-        val mc = c.asInstanceOf[ManyCallbacks[U]]
-        new ManyCallbacks(mc, this)
-      } else /* if (c eq NoopCallback) */this
+    override final def prepend[U <: T](c: Callbacks[U]): Callbacks[U] =
+      if (c.isInstanceOf[XformCallback[T]]) prepend(c.asInstanceOf[XformCallback[T]])
+      else if (c.isInstanceOf[ManyCallbacks[U]]) c.asInstanceOf[ManyCallbacks[U]].concat(this)
+      else /* if (c eq null) */this
 
-    final def prepend[U >: T](tp: XformCallback[U]): ManyCallbacks[U] = new ManyCallbacks[U](tp, this)
+    final def prepend[U <: T](tp: XformCallback[U]): ManyCallbacks[U] = new ManyCallbacks[U](tp, this)
 
-    final def append[U >: T](tp: XformCallback[U]): ManyCallbacks[U] = new ManyCallbacks[U](this, tp)
+    final def append[U <: T](tp: XformCallback[U]): ManyCallbacks[U] = new ManyCallbacks[U](this, tp)
 
-    final def concat[U >: T](m: ManyCallbacks[U]): ManyCallbacks[U] = new ManyCallbacks[U](this, m)
+    final def concat[U <: T](m: ManyCallbacks[U]): ManyCallbacks[U] = new ManyCallbacks[U](this, m)
 
-    override final def submitWithValue(v: Try[T @uncheckedVariance]): this.type = submitWithValue(this, v)
+    override final def submitWithValue(v: Try[T]): this.type = submitWithValue(this, v)
 
     @tailrec private[this] final def submitWithValue(cb: Callbacks[T], v: Try[T]): this.type =
       if (cb.isInstanceOf[ManyCallbacks[T]]) {
