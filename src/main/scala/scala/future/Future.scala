@@ -547,7 +547,7 @@ trait Future[+T] extends Awaitable[T] {
     transform {
       result =>
         try pf.applyOrElse[Try[T], Any](result, Future.id[Try[T]])
-        catch { case NonFatal(t) => executor reportFailure t }
+        catch { case t if NonFatal(t) => executor.reportFailure(t) }
 
         result
     }

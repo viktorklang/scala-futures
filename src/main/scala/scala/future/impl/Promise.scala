@@ -119,40 +119,40 @@ private[future] final object Promise {
       dispatchOrAddCallbacks(new XformPromise[T, Future, S](f, executor))
 
     override def onFailure[U](@deprecatedName('callback) pf: PartialFunction[Throwable, U])(implicit executor: ExecutionContext): Unit =
-      if (!value0.isInstanceOf[Success[T]]) super[Future].onFailure(pf) // Short-circuit if we get a Failure
+      if (!value0.isInstanceOf[Success[T]]) super[Future].onFailure(pf) // Short-circuit if we get a Failure, consider using get() iso value0
 
     override def onSuccess[U](pf: PartialFunction[T, U])(implicit executor: ExecutionContext): Unit = 
-      if (!value0.isInstanceOf[Failure[T]]) super[Future].onSuccess(pf)  // Short-circuit if we get a Success
+      if (!value0.isInstanceOf[Failure[T]]) super[Future].onSuccess(pf)  // Short-circuit if we get a Success, consider using get() iso value0
 
     override def foreach[U](f: T => U)(implicit executor: ExecutionContext): Unit =
-      if (!value0.isInstanceOf[Failure[T]]) super[Future].foreach(f)  // Short-circuit if we get a Success
+      if (!value0.isInstanceOf[Failure[T]]) super[Future].foreach(f)  // Short-circuit if we get a Success, consider using get() iso value0
 
     override def flatMap[S](f: T => Future[S])(implicit executor: ExecutionContext): Future[S] = 
-      if (!value0.isInstanceOf[Failure[T]]) super[Future].flatMap(f) // Short-circuit if we get a Success
+      if (!value0.isInstanceOf[Failure[T]]) super[Future].flatMap(f) // Short-circuit if we get a Success, consider using get() iso value0
       else this.asInstanceOf[Future[S]]
 
     override def map[S](f: T => S)(implicit executor: ExecutionContext): Future[S] =
-      if (!value0.isInstanceOf[Failure[T]]) super[Future].map(f) // Short-circuit if we get a Success
+      if (!value0.isInstanceOf[Failure[T]]) super[Future].map(f) // Short-circuit if we get a Success, consider using get() iso value0
       else this.asInstanceOf[Future[S]]
 
     override def filter(@deprecatedName('pred) p: T => Boolean)(implicit executor: ExecutionContext): Future[T] =
-      if (!value0.isInstanceOf[Failure[T]]) super[Future].filter(p) // Short-circuit if we get a Success
+      if (!value0.isInstanceOf[Failure[T]]) super[Future].filter(p) // Short-circuit if we get a Success, consider using get() iso value0
       else this
 
     override def collect[S](pf: PartialFunction[T, S])(implicit executor: ExecutionContext): Future[S] =
-      if (!value0.isInstanceOf[Failure[T]]) super[Future].collect(pf) // Short-circuit if we get a Success
+      if (!value0.isInstanceOf[Failure[T]]) super[Future].collect(pf) // Short-circuit if we get a Success, consider using get() iso value0
       else this.asInstanceOf[Future[S]]
 
     override def recoverWith[U >: T](pf: PartialFunction[Throwable, Future[U]])(implicit executor: ExecutionContext): Future[U] =
-      if (!value0.isInstanceOf[Success[T]]) super[Future].recoverWith(pf) // Short-circuit if we get a Failure
+      if (!value0.isInstanceOf[Success[T]]) super[Future].recoverWith(pf) // Short-circuit if we get a Failure, consider using get() iso value0
       else this.asInstanceOf[Future[U]]
 
     override def recover[U >: T](pf: PartialFunction[Throwable, U])(implicit executor: ExecutionContext): Future[U] =
-      if (!value0.isInstanceOf[Success[T]]) super[Future].recover(pf) // Short-circuit if we get a Failure
+      if (!value0.isInstanceOf[Success[T]]) super[Future].recover(pf) // Short-circuit if we get a Failure, consider using get() iso value0
       else this.asInstanceOf[Future[U]]
 
     override def mapTo[S](implicit tag: scala.reflect.ClassTag[S]): Future[S] =
-      if (!value0.isInstanceOf[Failure[T]]) super[Future].mapTo[S](tag) // Short-circuit if we get a Success
+      if (!value0.isInstanceOf[Failure[T]]) super[Future].mapTo[S](tag) // Short-circuit if we get a Success, consider using get() iso value0
       else this.asInstanceOf[Future[S]]
 
     override def toString: String = toString0
@@ -252,23 +252,12 @@ private[future] final object Promise {
       val state = get()
       if (state.isInstanceOf[Try[T]]) callbacks.submitWithValue(state.asInstanceOf[Try[T]])
       else if ((state eq null) || state.isInstanceOf[Callbacks[T]]) {
-        if(compareAndSet(state, prependCallbacks(state.asInstanceOf[Callbacks[T]], callbacks))) callbacks
+        val newCallbacks = if (state eq null) callbacks else new ManyCallbacks[T](callbacks, state.asInstanceOf[Callbacks[T]])
+        if(compareAndSet(state, newCallbacks)) callbacks
         else dispatchOrAddCallbacks(callbacks)
       } else /*if (state.isInstanceOf[Link[T]])*/
         state.asInstanceOf[Link[T]].promise().dispatchOrAddCallbacks(callbacks)
     }
-
-    private[this] final def prependCallbacks(old: Callbacks[T], add: Callbacks[T]): Callbacks[T] =
-      if (old eq null) add
-      else if (old.isInstanceOf[XformCallback[T]]) {
-        val xc = old.asInstanceOf[XformCallback[T]]
-        if (add.isInstanceOf[ManyCallbacks[T]]) add.asInstanceOf[ManyCallbacks[T]].append(xc)
-        else /*if (add.isInstanceOf[XformCallback[T]])*/ new ManyCallbacks[T](add.asInstanceOf[XformCallback[T]], xc)
-      } else /*if (old.isInstanceOf[ManyCallbacks[T]])*/ {
-        val mc = old.asInstanceOf[ManyCallbacks[T]]
-        if (add.isInstanceOf[XformCallback[T]]) mc.prepend(add.asInstanceOf[XformCallback[T]])
-        else /* if(add.isInstanceOf[ManyCallbacks[T]]) */ add.asInstanceOf[ManyCallbacks[T]].concat(mc)
-      }
 
     /** Link this promise to the root of another promise.
      *  Should only be be called by transformWith.
@@ -326,7 +315,7 @@ private[future] final object Promise {
         try
           executor.execute(this)
         catch {
-          case NonFatal(t) =>
+          case t if NonFatal(t) =>
             if (!this.tryFailure(t)) // If we can't propagate, then report
               ec.reportFailure(t)
         }
@@ -344,7 +333,7 @@ private[future] final object Promise {
           r.asInstanceOf[DefaultPromise[T]].linkRootOf(this)
         else
           this.completeWith(r.asInstanceOf[Future[T]])
-      } else if (r.isInstanceOf[T @unchecked])
+      } else //if (r.isInstanceOf[T @unchecked])
         this.success(r.asInstanceOf[T])
       // else throw new IllegalStateException("Result value of type ${r.getClass} not valid")
     }
@@ -354,7 +343,7 @@ private[future] final object Promise {
       // The invariant below should hold—is it required to test for?
       /* if (v.isInstanceOf[Try[F]] && (fun ne null)) */
         try complete(_fun(_arg.asInstanceOf[Try[F]])) catch {
-          case NonFatal(t) => this.tryFailure(t)
+          case t if NonFatal(t) => this.tryFailure(t)
         } finally {
           _fun = null
           _arg = null
@@ -369,16 +358,9 @@ private[future] final object Promise {
     def submitWithValue(v: Try[T]): this.type
   }
 
-  // `p` is always either a ManyCallbacks or an XformCallback
-  // `next` is always either a ManyCallbacks or an XformCallback
-  final class ManyCallbacks[-T] private[ManyCallbacks](final val p: Callbacks[T], final val next: Callbacks[T]) extends Callbacks[T] {
-    final def this(head: XformCallback[T], tail: XformCallback[T]) = this(head: Callbacks[T], tail: Callbacks[T])
-
-    final def prepend[U <: T](tp: XformCallback[U]): ManyCallbacks[U] = new ManyCallbacks[U](tp, this)
-
-    final def append[U <: T](tp: XformCallback[U]): ManyCallbacks[U] = new ManyCallbacks[U](this, tp)
-
-    final def concat[U <: T](m: ManyCallbacks[U]): ManyCallbacks[U] = new ManyCallbacks[U](this, m)
+  // `p` is always either a ManyCallbacks or an XformCallback (not null)
+  // `next` is always either a ManyCallbacks or an XformCallback (not null)
+  final class ManyCallbacks[-T](final val p: Callbacks[T], final val next: Callbacks[T]) extends Callbacks[T] {
 
     override final def submitWithValue(v: Try[T]): this.type = submitWithValue(this, v)
 

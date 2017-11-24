@@ -36,10 +36,17 @@ abstract class AbstractBaseBenchmark {
 
   @Setup(Level.Trial)
   final def startup: Unit = {
-    executor = pool match {
-      case "fjp" => new java.util.concurrent.ForkJoinPool(threads)
-      case "fix" => java.util.concurrent.Executors.newFixedThreadPool(threads)
-      case "fie" => scala.future.Future.InternalCallbackExecutor
+    val (executorStdlib, executorImproved) = pool match {
+      case "fjp" =>
+        val fjp = new java.util.concurrent.ForkJoinPool(threads)
+        executor = fjp
+        (fjp, fjp)
+      case "fix" =>
+        val ftp = java.util.concurrent.Executors.newFixedThreadPool(threads)
+        executor = ftp
+        (ftp, ftp)
+      case "fie" =>
+        (scala.concurrent.InternalCallbackExecutor().asInstanceOf[Executor], scala.future.Future.InternalCallbackExecutor)
     }
 
     isCompleted = completed match {
@@ -48,13 +55,13 @@ abstract class AbstractBaseBenchmark {
     }
 
     stdLibEC = new stdlib.ExecutionContext {
-      private[this] val g = executor
+      private[this] val g = executorStdlib
       override final def execute(r: Runnable) = g.execute(r)
       override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
     }
 
-    improvedEC = new /*BatchingExecutor with*/ stdlib.ExecutionContext {
-      private[this] val g = executor
+    improvedEC = new stdlib.ExecutionContext {
+      private[this] val g = executorImproved
       override final def execute(r: Runnable) = g.execute(r)
       override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
     }
