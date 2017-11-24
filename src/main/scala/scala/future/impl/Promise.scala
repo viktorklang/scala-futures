@@ -315,30 +315,32 @@ private[future] final object Promise {
 
   type XformCallback[-F] = XformPromise[F, Nothing, _]
 
-  final class XformPromise[-F, -TM[+_], T](f: Try[F] => TM[T], ec: ExecutionContext) extends DefaultPromise[T]() with Callbacks[F] with Runnable with OnCompleteRunnable {
-    private[this] final var _arg: AnyRef = ec.prepare() // Is first the EC -> then the value -> then null
-    private[this] final var _fun: Try[F] => TM[T] = f // Is first the transformation function -> then null
+  final class XformPromise[-F, -TM[+_], T] private[this] (
+    private[this] final var _fun: Try[F] => TM[T],
+    private[this] final var _arg: AnyRef
+  ) extends DefaultPromise[T]() with Callbacks[F] with Runnable with OnCompleteRunnable {
+    def this(f: Try[F] => TM[T], ec: ExecutionContext) = this(f, ec.prepare(): AnyRef)
 
     // Gets invoked when a value is available, schedules it to be run():ed by the ExecutionContext
     // submitWithValue *happens-before* run(), through ExecutionContext.execute.
+    // Invariant: _arg is `ExecutionContext`
+    // requireNonNull(v) will hold as guarded by `resolve`
     final def submitWithValue(v: Try[F]): Unit = {
-      val a = _arg
-      if (a.isInstanceOf[ExecutionContext]) {
-        val executor = a.asInstanceOf[ExecutionContext]
-        _arg = v // requireNonNull(v) will hold as guarded by `resolve`
-        try
-          executor.execute(this)
-        catch {
-          case t if NonFatal(t) =>
-            if (!this.tryFailure(t))
-              ec.reportFailure(t)
-        }
+      val executor = _arg.asInstanceOf[ExecutionContext]
+      try {
+        _arg = v
+        executor.execute(this) // Safe publication of _arg = v (and _fun)
+      }
+      catch {
+        case t if NonFatal(t) =>
+          if (!this.tryFailure(t))
+            executor.reportFailure(t)
       }
     }
 
     // Gets invoked by run()
     // TODO: consider different encoding where result handling is tableswitched iso branched
-    private[this] final def complete(r: TM[T]): Unit = {
+    private[this] final def complete(r: TM[T]): Unit =
       if (r.isInstanceOf[Try[T]])
         this.complete(r.asInstanceOf[Try[T]])
       else if (r.isInstanceOf[Future[T]]) {
@@ -349,15 +351,13 @@ private[future] final object Promise {
       } else //if (r.isInstanceOf[T @unchecked])
         this.success(r.asInstanceOf[T])
       // else throw new IllegalStateException("Result value of type ${r.getClass} not valid")
-    }
 
     // Gets invoked by the ExecutionContext, when we have a value to transform.
+    // Invariant: if (v.isInstanceOf[Try[F]] && (fun ne null))
     override final def run(): Unit =
-      // The invariant below should hold—is it required to test for?
-      /* if (v.isInstanceOf[Try[F]] && (fun ne null)) */
         try complete(_fun(_arg.asInstanceOf[Try[F]])) catch {
           case t if NonFatal(t) => this.tryFailure(t)
-        } finally {
+        } finally { // allow these to GC
           _fun = null
           _arg = null
         }
