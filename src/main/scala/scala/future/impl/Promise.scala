@@ -278,7 +278,7 @@ private[future] final object Promise {
         if (state.isInstanceOf[Try[T]]) {
           if (!target.tryComplete(state.asInstanceOf[Try[T]]))
             throw new IllegalStateException("Cannot link completed promises together")
-        } else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].link(new Link(target))
+        } else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].link(new Link(target)) // Look for optimizations here
         else /*if ((state eq null) || state.isInstanceOf[Callbacks[T]]) */
           tryLink(state, new Link(target))
       }
@@ -330,8 +330,7 @@ private[future] final object Promise {
       try {
         _arg = v
         executor.execute(this) // Safe publication of _arg = v (and _fun)
-      }
-      catch {
+      } catch {
         case t if NonFatal(t) =>
           if (!this.tryFailure(t))
             executor.reportFailure(t)

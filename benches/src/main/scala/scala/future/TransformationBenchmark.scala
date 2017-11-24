@@ -84,24 +84,32 @@ abstract class AbstractBaseBenchmark {
   @Setup(Level.Invocation)
   def setup: Unit
 
-  def benchFunStdlib(ops: Int)(implicit ec: stdlib.ExecutionContext): stdlib.Awaitable[Any]
-  def benchFunImproved(ops: Int)(implicit ec: stdlib.ExecutionContext): stdlib.Awaitable[Any]
+  def benchFunStdlib(ops: Int)(implicit ec: stdlib.ExecutionContext): stdlib.Future[Any]
+  def benchFunImproved(ops: Int)(implicit ec: stdlib.ExecutionContext): improved.Future[Any]
+
+  final def awaitStdlib(f: stdlib.Future[Any], timeout: Duration): Unit =
+    stdlib.Await.ready(f, timeout)
+    //while(!f.isCompleted) {}
+
+  final def awaitImproved(f: improved.Future[Any], timeout: Duration): Unit =
+    stdlib.Await.ready(f, timeout)
+    //while(!f.isCompleted) {}
 
   @Benchmark
   @OperationsPerInvocation(1)
-  final def x1_stdlib = stdlib.Await.result(benchFunStdlib(1)(stdLibEC), timeout)
+  final def x1_stdlib = awaitStdlib(benchFunStdlib(1)(stdLibEC), timeout)
 
   @Benchmark
   @OperationsPerInvocation(1)
-  final def x1_improved = stdlib.Await.result(benchFunImproved(1)(improvedEC), timeout)
+  final def x1_improved = awaitImproved(benchFunImproved(1)(improvedEC), timeout)
 
   @Benchmark
   @OperationsPerInvocation(1024)
-  final def x1024_stdlib = stdlib.Await.result(benchFunStdlib(1024)(stdLibEC), timeout)
+  final def x1024_stdlib = awaitStdlib(benchFunStdlib(1024)(stdLibEC), timeout)
 
   @Benchmark
   @OperationsPerInvocation(1024)
-  final def x1024_improved = stdlib.Await.result(benchFunImproved(1024)(improvedEC), timeout)
+  final def x1024_improved = awaitImproved(benchFunImproved(1024)(improvedEC), timeout)
 }
 
 abstract class OpBenchmark extends AbstractBaseBenchmark {
@@ -123,7 +131,7 @@ abstract class OpBenchmark extends AbstractBaseBenchmark {
 
   def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result]
 
-  final override def benchFunStdlib(ops: Int)(implicit ec: stdlib.ExecutionContext): stdlib.Awaitable[Any] = {
+  final override def benchFunStdlib(ops: Int)(implicit ec: stdlib.ExecutionContext): stdlib.Future[Any] = {
     @tailrec def next(i: Int)(f: stdlib.Future[Result]): stdlib.Future[Result] =
       if (i > 0) next(i - 1)(xformStdlib(f)) else f
 
@@ -133,7 +141,7 @@ abstract class OpBenchmark extends AbstractBaseBenchmark {
     cf
   }
 
-  final override def benchFunImproved(ops: Int)(implicit ec: stdlib.ExecutionContext): stdlib.Awaitable[Any] = {
+  final override def benchFunImproved(ops: Int)(implicit ec: stdlib.ExecutionContext): improved.Future[Any] = {
     @tailrec def next(i: Int)(f: improved.Future[Result]): improved.Future[Result] =
       if (i > 0) next(i - 1)(xformImproved(f)) else f
 
@@ -244,6 +252,14 @@ class LoopBenchmark extends OpBenchmark {
 
   override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
     if (isCompleted) f.flatMap(s => pre_improved_loop(100).map(_ => s)) else f.flatMap(s => pre_improved_loop(100).map(_ => s))
+}
+
+class NoopBenchmark extends OpBenchmark {
+  override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+    f
+
+  override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+    f
 }
 
 /*class ZipBenchmark extends OpBenchmark {
