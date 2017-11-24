@@ -232,7 +232,7 @@ private[future] final object Promise {
       if (Noop || state.isInstanceOf[Callbacks[T]]) {
         if (compareAndSet(state, resolved)) {
           if (Noop) ()
-          else state.asInstanceOf[Callbacks[T]].submitWithValue(resolved)
+          else submitWithValue(state.asInstanceOf[Callbacks[T]], resolved)
           true
         } else tryComplete0(get(), resolved)
       } else if (state.isInstanceOf[Link[T]]) {
@@ -250,13 +250,23 @@ private[future] final object Promise {
      */
     @tailrec private final def dispatchOrAddCallbacks[C <: Callbacks[T]](callbacks: C): C = {
       val state = get()
-      if (state.isInstanceOf[Try[T]]) callbacks.submitWithValue(state.asInstanceOf[Try[T]])
-      else if ((state eq null) || state.isInstanceOf[Callbacks[T]]) {
+      if (state.isInstanceOf[Try[T]]) {
+        submitWithValue(callbacks, state.asInstanceOf[Try[T]])
+        callbacks
+      } else if ((state eq null) || state.isInstanceOf[Callbacks[T]]) {
         val newCallbacks = if (state eq null) callbacks else new ManyCallbacks[T](callbacks, state.asInstanceOf[Callbacks[T]])
         if(compareAndSet(state, newCallbacks)) callbacks
         else dispatchOrAddCallbacks(callbacks)
       } else /*if (state.isInstanceOf[Link[T]])*/
         state.asInstanceOf[Link[T]].promise().dispatchOrAddCallbacks(callbacks)
+    }
+
+    private[this] final def submitWithValue(cb: Callbacks[T], v: Try[T]): Unit = {
+      if (cb.isInstanceOf[ManyCallbacks[T]]) {
+        val m = cb.asInstanceOf[ManyCallbacks[T]]
+        submitWithValue(m.first, v) // TODO: this will grow the stack—needs real-world proofing
+        submitWithValue(m.last, v)
+      } else cb.asInstanceOf[XformCallback[T]].submitWithValue(v)
     }
 
     /** Link this promise to the root of another promise.
@@ -299,6 +309,10 @@ private[future] final object Promise {
     }
   }
 
+  /* Marker trait
+   */
+  sealed trait Callbacks[-T]
+
   type XformCallback[-F] = XformPromise[F, Nothing, _]
 
   final class XformPromise[-F, -TM[+_], T](f: Try[F] => TM[T], ec: ExecutionContext) extends DefaultPromise[T]() with Callbacks[F] with Runnable with OnCompleteRunnable {
@@ -307,7 +321,7 @@ private[future] final object Promise {
 
     // Gets invoked when a value is available, schedules it to be run():ed by the ExecutionContext
     // submitWithValue *happens-before* run(), through ExecutionContext.execute.
-    override final def submitWithValue(v: Try[F]): this.type = {
+    final def submitWithValue(v: Try[F]): Unit = {
       val a = _arg
       if (a.isInstanceOf[ExecutionContext]) {
         val executor = a.asInstanceOf[ExecutionContext]
@@ -316,11 +330,10 @@ private[future] final object Promise {
           executor.execute(this)
         catch {
           case t if NonFatal(t) =>
-            if (!this.tryFailure(t)) // If we can't propagate, then report
+            if (!this.tryFailure(t))
               ec.reportFailure(t)
         }
       }
-      this
     }
 
     // Gets invoked by run()
@@ -352,30 +365,7 @@ private[future] final object Promise {
     override final def toString: String = super[DefaultPromise].toString
   }
 
-  /* Encodes the concept of having callbacks.
-   */
-  sealed trait Callbacks[-T] {
-    def submitWithValue(v: Try[T]): this.type
-  }
-
-  // `p` is always either a ManyCallbacks or an XformCallback (not null)
-  // `next` is always either a ManyCallbacks or an XformCallback (not null)
-  final class ManyCallbacks[-T](final val p: Callbacks[T], final val next: Callbacks[T]) extends Callbacks[T] {
-
-    override final def submitWithValue(v: Try[T]): this.type = submitWithValue(this, v)
-
-    @tailrec private[this] final def submitWithValue(cb: Callbacks[T], v: Try[T]): this.type =
-      if (cb.isInstanceOf[ManyCallbacks[T]]) {
-        val m = cb.asInstanceOf[ManyCallbacks[T]]
-        // TODO: this will grow the stack—needs real-world proofing
-        // Possible solution is to go O(2N) and visit each leg of the graph separately
-        m.p.submitWithValue(v)
-        submitWithValue(m.next, v)
-      } else {
-        cb.submitWithValue(v)
-        this
-      }
-
+  final class ManyCallbacks[-T](final val first: Callbacks[T], final val last: Callbacks[T]) extends Callbacks[T] {
     override final def toString: String = "ManyCallbacks"
   }
 }
