@@ -78,12 +78,6 @@ abstract class AbstractBaseBenchmark {
     }
   }
 
-  @TearDown(Level.Invocation)
-  def teardown: Unit
-
-  @Setup(Level.Invocation)
-  def setup: Unit
-
   def benchFunStdlib(ops: Int)(implicit ec: stdlib.ExecutionContext): stdlib.Future[Any]
   def benchFunImproved(ops: Int)(implicit ec: stdlib.ExecutionContext): improved.Future[Any]
 
@@ -118,18 +112,6 @@ abstract class OpBenchmark extends AbstractBaseBenchmark {
   private[this] final var stdlibP: stdlib.Promise[Result] = _
   private[this] final var improvedP: improved.Promise[Result] = _
 
-  @Setup(Level.Invocation)
-  override final def setup: Unit = {
-    stdlibP = if (isCompleted) stdlib.Promise.successful("stdlib") else stdlib.Promise[Result]
-    improvedP = if (isCompleted) improved.Promise.successful("improved") else improved.Promise[Result]
-  }
-
-  @TearDown(Level.Invocation)
-  override final def teardown: Unit = {
-    stdlibP = null
-    improvedP = null
-  }
-
   def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result]
 
   def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result]
@@ -138,7 +120,7 @@ abstract class OpBenchmark extends AbstractBaseBenchmark {
     @tailrec def next(i: Int)(f: stdlib.Future[Result]): stdlib.Future[Result] =
       if (i > 0) next(i - 1)(xformStdlib(f)) else f
 
-    val p = stdlibP
+    val p = if (isCompleted) stdlib.Promise.successful("stdlib") else stdlib.Promise[Result]
     val f = p.future
 
     val cf = next(ops)(f)
@@ -151,7 +133,7 @@ abstract class OpBenchmark extends AbstractBaseBenchmark {
     @tailrec def next(i: Int)(f: improved.Future[Result]): improved.Future[Result] =
       if (i > 0) next(i - 1)(xformImproved(f)) else f
 
-    val p = improvedP
+    val p = if (isCompleted) improved.Promise.successful("improved") else improved.Promise[Result]
     val f = p.future
 
     val cf = next(ops)(f)
