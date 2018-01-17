@@ -118,10 +118,13 @@ abstract class OpBenchmark extends AbstractBaseBenchmark {
   private[this] final var stdlibP: stdlib.Promise[Result] = _
   private[this] final var improvedP: improved.Promise[Result] = _
 
+  @Setup(Level.Invocation)
   override final def setup: Unit = {
     stdlibP = if (isCompleted) stdlib.Promise.successful("stdlib") else stdlib.Promise[Result]
     improvedP = if (isCompleted) improved.Promise.successful("improved") else improved.Promise[Result]
   }
+
+  @TearDown(Level.Invocation)
   override final def teardown: Unit = {
     stdlibP = null
     improvedP = null
@@ -135,9 +138,12 @@ abstract class OpBenchmark extends AbstractBaseBenchmark {
     @tailrec def next(i: Int)(f: stdlib.Future[Result]): stdlib.Future[Result] =
       if (i > 0) next(i - 1)(xformStdlib(f)) else f
 
-    val cf = next(ops)(stdlibP.future)
+    val p = stdlibP
+    val f = p.future
+
+    val cf = next(ops)(f)
     if (!isCompleted)
-    stdlibP.success("stdlib")
+    p.success("stdlib")
     cf
   }
 
@@ -145,9 +151,12 @@ abstract class OpBenchmark extends AbstractBaseBenchmark {
     @tailrec def next(i: Int)(f: improved.Future[Result]): improved.Future[Result] =
       if (i > 0) next(i - 1)(xformImproved(f)) else f
 
-    val cf = next(ops)(improvedP.future)
+    val p = improvedP
+    val f = p.future
+
+    val cf = next(ops)(f)
     if(!isCompleted)
-    improvedP.success("improved")
+    p.success("improved")
     cf
   }
 }
