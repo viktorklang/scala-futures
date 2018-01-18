@@ -2,8 +2,9 @@ package scala.future
 
 import scala.concurrent.duration._
 import java.util.concurrent.{TimeUnit,Executor, ExecutorService}
+import org.openjdk.jmh.infra.Blackhole
 import org.openjdk.jmh.annotations._
-import scala.util.Try
+import scala.util.{ Try, Success }
 import scala.annotation.tailrec
 import scala.{concurrent => stdlib}
 import scala.{future => improved}
@@ -14,25 +15,20 @@ import scala.{future => improved}
 @Warmup(iterations = 1000)
 @Measurement(iterations = 10000)
 @Fork(value = 1, jvmArgsAppend = Array("-ea","-server","-XX:+UseCompressedOops","-XX:+AggressiveOpts","-XX:+AlwaysPreTouch", "-XX:+UseCondCardMark"))
+@Threads(value = 1)
 abstract class AbstractBaseBenchmark {
-
   @Param(Array[String]("fjp", "fix", "fie"))
-  var pool: String = _
+  final var pool: String = _
 
   @Param(Array[String]("1"))
-  var threads: Int = _
+  final var threads: Int = _
 
-  @Param(Array[String]("pre","post"))
-  var completed: String = _
+  final var executor: Executor = _
 
-  var isCompleted: Boolean = _
+  final var stdLibEC: stdlib.ExecutionContext = _
+  final var improvedEC: stdlib.ExecutionContext = _
 
-  var executor: Executor = _
-
-  var stdLibEC: stdlib.ExecutionContext = _
-  var improvedEC: stdlib.ExecutionContext = _
-
-  val timeout = 60.seconds
+  final val timeout = 60.seconds
 
   @Setup(Level.Trial)
   final def startup: Unit = {
@@ -47,11 +43,6 @@ abstract class AbstractBaseBenchmark {
         (ftp, ftp)
       case "fie" =>
         (scala.concurrent.InternalCallbackExecutor().asInstanceOf[Executor], scala.future.Future.InternalCallbackExecutor)
-    }
-
-    isCompleted = completed match {
-      case "pre" => true
-      case "post" => false
     }
 
     stdLibEC = new stdlib.ExecutionContext {
@@ -71,75 +62,59 @@ abstract class AbstractBaseBenchmark {
   final def shutdown: Unit = {
     executor = executor match {
       case es: ExecutorService =>
-        es.shutdown()
-        es.awaitTermination(1, TimeUnit.MINUTES)
+        try es.shutdown() finally es.awaitTermination(1, TimeUnit.MINUTES)
         null
       case _ => null
     }
   }
-
-  def benchFunStdlib(ops: Int)(implicit ec: stdlib.ExecutionContext): stdlib.Future[Any]
-  def benchFunImproved(ops: Int)(implicit ec: stdlib.ExecutionContext): improved.Future[Any]
-
-  final def awaitStdlib(f: stdlib.Future[Any], timeout: Duration): Unit =
-    stdlib.Await.ready(f, timeout)
-    //while(!f.isCompleted) {}
-
-  final def awaitImproved(f: improved.Future[Any], timeout: Duration): Unit =
-    stdlib.Await.ready(f, timeout)
-    //while(!f.isCompleted) {}
-
-  @Benchmark
-  @OperationsPerInvocation(1)
-  final def x1_stdlib = awaitStdlib(benchFunStdlib(1)(stdLibEC), timeout)
-
-  @Benchmark
-  @OperationsPerInvocation(1)
-  final def x1_improved = awaitImproved(benchFunImproved(1)(improvedEC), timeout)
-
-  @Benchmark
-  @OperationsPerInvocation(1024)
-  final def x1024_stdlib = awaitStdlib(benchFunStdlib(1024)(stdLibEC), timeout)
-
-  @Benchmark
-  @OperationsPerInvocation(1024)
-  final def x1024_improved = awaitImproved(benchFunImproved(1024)(improvedEC), timeout)
 }
 
 abstract class OpBenchmark extends AbstractBaseBenchmark {
   type Result = String
 
-  private[this] final var stdlibP: stdlib.Promise[Result] = _
-  private[this] final var improvedP: improved.Promise[Result] = _
+  final val stdlibSuccess = Success("stdlib")
+  final val improvedSuccess = Success("improved")
+
+  final val improved_pre_p: improved.Promise[Result] = improved.Promise.fromTry(improvedSuccess)
+  final val stdlib_pre_p: stdlib.Promise[Result] = stdlib.Promise.fromTry(stdlibSuccess)
 
   def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result]
-
   def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result]
 
-  final override def benchFunStdlib(ops: Int)(implicit ec: stdlib.ExecutionContext): stdlib.Future[Any] = {
-    @tailrec def next(i: Int)(f: stdlib.Future[Result]): stdlib.Future[Result] =
-      if (i > 0) next(i - 1)(xformStdlib(f)) else f
-
-    val p = if (isCompleted) stdlib.Promise.successful("stdlib") else stdlib.Promise[Result]
-    val f = p.future
-
-    val cf = next(ops)(f)
-    if (!isCompleted)
-    p.success("stdlib")
-    cf
+  @Benchmark final def stdlib_noop(bh: Blackhole): Result = {
+    val stdlib_post_p = stdlib.Promise[Result]()
+    val f = stdlib_post_p.future
+    bh.consume(f)
+    stdlib_post_p.complete(stdlibSuccess)
+    stdlib.Await.result(f, timeout)
   }
 
-  final override def benchFunImproved(ops: Int)(implicit ec: stdlib.ExecutionContext): improved.Future[Any] = {
-    @tailrec def next(i: Int)(f: improved.Future[Result]): improved.Future[Result] =
-      if (i > 0) next(i - 1)(xformImproved(f)) else f
+  @Benchmark final def stdlib_pre(): Result =
+    stdlib.Await.result(xformStdlib(stdlib_pre_p.future)(stdLibEC), timeout)
 
-    val p = if (isCompleted) improved.Promise.successful("improved") else improved.Promise[Result]
-    val f = p.future
+  @Benchmark final def stdlib_post(): Result = {
+    val stdlib_post_p = stdlib.Promise[Result]()
+    val f = xformStdlib(stdlib_post_p.future)(stdLibEC)
+    stdlib_post_p.complete(stdlibSuccess)
+    stdlib.Await.result(f, timeout)
+  }
 
-    val cf = next(ops)(f)
-    if(!isCompleted)
-    p.success("improved")
-    cf
+  @Benchmark final def improved_noop(bh: Blackhole): Result = {
+    val improved_post_p = improved.Promise[Result]()
+    val f = improved_post_p.future
+    bh.consume(f)
+    improved_post_p.complete(improvedSuccess)
+    stdlib.Await.result(f, timeout)
+  }
+
+  @Benchmark final def improved_pre(): Result =
+    stdlib.Await.result(xformImproved(improved_pre_p.future)(stdLibEC), timeout)
+
+  @Benchmark final def improved_post(): Result = {
+    val improved_post_p = improved.Promise[Result]()
+    val f = xformImproved(improved_post_p.future)(stdLibEC)
+    improved_post_p.complete(improvedSuccess)
+    stdlib.Await.result(f, timeout)
   }
 }
 
@@ -239,18 +214,10 @@ class LoopBenchmark extends OpBenchmark {
     else improved.Future(i)
 
   override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
-    if (isCompleted) f.flatMap(s => pre_stdlib_loop(100).map(_ => s)) else f.flatMap(s => pre_stdlib_loop(100).map(_ => s))
+    if (f eq stdlib_pre_p.future) f.flatMap(s => pre_stdlib_loop(100).map(_ => s)) else f.flatMap(s => post_stdlib_loop(100).map(_ => s))
 
   override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
-    if (isCompleted) f.flatMap(s => pre_improved_loop(100).map(_ => s)) else f.flatMap(s => pre_improved_loop(100).map(_ => s))
-}
-
-class NoopBenchmark extends OpBenchmark {
-  override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
-    f
-
-  override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
-    f
+    if (f eq improved_pre_p.future) f.flatMap(s => pre_improved_loop(100).map(_ => s)) else f.flatMap(s => post_improved_loop(100).map(_ => s))
 }
 
 /*class ZipBenchmark extends OpBenchmark {
