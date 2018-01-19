@@ -23,9 +23,12 @@ abstract class AbstractBaseBenchmark {
   @Param(Array[String]("1"))
   final var threads: Int = _
 
+  @Param(Array[String]("1024"))
+  final var recursion: Int = _
+
   final var executor: Executor = _
 
-  final var stdLibEC: stdlib.ExecutionContext = _
+  final var stdlibEC: stdlib.ExecutionContext = _
   final var improvedEC: stdlib.ExecutionContext = _
 
   final val timeout = 60.seconds
@@ -45,7 +48,7 @@ abstract class AbstractBaseBenchmark {
         (scala.concurrent.InternalCallbackExecutor().asInstanceOf[Executor], scala.future.Future.InternalCallbackExecutor)
     }
 
-    stdLibEC = new stdlib.ExecutionContext {
+    stdlibEC = new stdlib.ExecutionContext {
       private[this] val g = executorStdlib
       override final def execute(r: Runnable) = g.execute(r)
       override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
@@ -81,41 +84,47 @@ abstract class OpBenchmark extends AbstractBaseBenchmark {
   def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result]
   def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result]
 
-  @Benchmark final def stdlib_noop(bh: Blackhole): Result = {
-    val stdlib_post_p = stdlib.Promise[Result]()
-    val f = stdlib_post_p.future
-    bh.consume(f)
-    stdlib_post_p.complete(stdlibSuccess)
-    stdlib.Await.result(f, timeout)
-  }
+  private[this] final def await(a: stdlib.Awaitable[Result]): Result =
+    stdlib.Await.result(a, timeout)
 
-  @Benchmark final def stdlib_pre(): Result =
-    stdlib.Await.result(xformStdlib(stdlib_pre_p.future)(stdLibEC), timeout)
+  @Benchmark final def stdlib_pre(): Result = {
+    @tailrec def next(i: Int)(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+      if (i > 0) next(i - 1)(xformStdlib(f)) else f
+    await(next(recursion)(stdlib_pre_p.future)(stdlibEC))
+  }
 
   @Benchmark final def stdlib_post(): Result = {
+    @tailrec def next(i: Int)(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+      if (i > 0) next(i - 1)(xformStdlib(f)) else f
+
     val stdlib_post_p = stdlib.Promise[Result]()
-    val f = xformStdlib(stdlib_post_p.future)(stdLibEC)
+    val f = next(recursion)(stdlib_post_p.future)(stdlibEC)
     stdlib_post_p.complete(stdlibSuccess)
-    stdlib.Await.result(f, timeout)
+    await(f)
   }
 
-  @Benchmark final def improved_noop(bh: Blackhole): Result = {
-    val improved_post_p = improved.Promise[Result]()
-    val f = improved_post_p.future
-    bh.consume(f)
-    improved_post_p.complete(improvedSuccess)
-    stdlib.Await.result(f, timeout)
+  @Benchmark final def improved_pre(): Result = {
+    @tailrec def next(i: Int)(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+      if (i > 0) next(i - 1)(xformImproved(f)) else f
+    await(next(recursion)(improved_pre_p.future)(improvedEC))
   }
-
-  @Benchmark final def improved_pre(): Result =
-    stdlib.Await.result(xformImproved(improved_pre_p.future)(stdLibEC), timeout)
 
   @Benchmark final def improved_post(): Result = {
+    @tailrec def next(i: Int)(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+      if (i > 0) next(i - 1)(xformImproved(f)) else f
+
     val improved_post_p = improved.Promise[Result]()
-    val f = xformImproved(improved_post_p.future)(stdLibEC)
+    val f = next(recursion)(improved_post_p.future)(improvedEC)
     improved_post_p.complete(improvedSuccess)
-    stdlib.Await.result(f, timeout)
+    await(f)
   }
+}
+
+class NoopBenchmark extends OpBenchmark {
+  override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+    f
+  override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+    f
 }
 
 class MapBenchmark extends OpBenchmark {
