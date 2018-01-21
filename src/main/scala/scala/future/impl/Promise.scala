@@ -47,29 +47,28 @@ private[future] final object Promise {
     private final class Link[T](to: DefaultPromise[T]) extends AtomicReference[DefaultPromise[T]](to) {
       final def promise(): DefaultPromise[T] = compressedRoot(this)
 
-      @tailrec private final def root(): DefaultPromise[T] = {
-        val cur = this.get()
-        val target = cur.get()
-        if (target.isInstanceOf[Link[T]]) target.asInstanceOf[Link[T]].root()
-        else cur
+      @tailrec private[this] def root(of: DefaultPromise[T]): DefaultPromise[T] = {
+        val value = of.get()
+        if (value.isInstanceOf[Link[T]]) root(value.asInstanceOf[Link[T]].get())
+        else of
       }
 
       @tailrec private[this] final def compressedRoot(linked: Link[T]): DefaultPromise[T] = {
         val current = linked.get()
-        val target = linked.root()
+        val target = root(current)
         if ((current eq target) || compareAndSet(current, target)) target
-        else compressedRoot(this)
+        else compressedRoot(linked)
       }
 
-      final def link(target: Link[T]): DefaultPromise[T] = {
+      final def link(target: DefaultPromise[T]): DefaultPromise[T] = {
           val current = get()
-          val newTarget = target.promise()
+          val newTarget = root(target)
           if ((current eq newTarget) || compareAndSet(current, newTarget)) newTarget
           else link(target)
       }
 
       final def unlink(owner: DefaultPromise[T]): Boolean = {
-        val r = root().get()
+        val r = root(get()).get()
         if (r.isInstanceOf[Try[T]]) unlink(owner, r.asInstanceOf[Try[T]]) else false
       }
 
@@ -278,7 +277,7 @@ private[future] final object Promise {
         if (state.isInstanceOf[Try[T]]) {
           if (!target.tryComplete(state.asInstanceOf[Try[T]]))
             throw new IllegalStateException("Cannot link completed promises together")
-        } else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].link(new Link(target)) // Look for optimizations here
+        } else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].link(target)
         else /*if ((state eq null) || state.isInstanceOf[Callbacks[T]]) */
           tryLink(state, new Link(target))
       }
