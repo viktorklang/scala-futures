@@ -14,7 +14,7 @@ import scala.{future => improved}
 @OutputTimeUnit(TimeUnit.MILLISECONDS)
 @Warmup(iterations = 1000)
 @Measurement(iterations = 10000)
-@Fork(value = 1, jvmArgsAppend = Array("-ea","-server","-XX:+UseCompressedOops","-XX:+AggressiveOpts","-XX:+AlwaysPreTouch", "-XX:+UseCondCardMark"))
+@Fork(value = 1, jvmArgsAppend = Array(/*"-agentpath:/Applications/YourKit-Java-Profiler-2017.02.app/Contents/Resources/bin/mac/libyjpagent.jnilib", */"-ea","-server","-XX:+UseCompressedOops","-XX:+AggressiveOpts","-XX:+AlwaysPreTouch", "-XX:+UseCondCardMark"))
 @Threads(value = 1)
 abstract class AbstractBaseBenchmark {
   @Param(Array[String]("fjp", "fix", "fie"))
@@ -81,108 +81,269 @@ abstract class OpBenchmark extends AbstractBaseBenchmark {
   final val improved_pre_p: improved.Promise[Result] = improved.Promise.fromTry(improvedSuccess)
   final val stdlib_pre_p: stdlib.Promise[Result] = stdlib.Promise.fromTry(stdlibSuccess)
 
-  def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result]
-  def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result]
+  protected final def await(a: stdlib.Future[Result]): Result = if (true) {
+    var r: Option[Try[Result]] = None
+    do {
+      r = a.value
+    } while(r eq None);
+    r.get.get
+  } else stdlib.Await.result(a, timeout)
 
-  private[this] final def await(a: stdlib.Awaitable[Result]): Result =
-    stdlib.Await.result(a, timeout)
+  protected final def await(a: improved.Future[Result]): Result = if (true) {
+    var r: Option[Try[Result]] = None
+    do {
+      r = a.value
+    } while(r eq None);
+    r.get.get
+  } else stdlib.Await.result(a, timeout)
+}
 
-  @Benchmark final def stdlib_pre(): Result = {
-    @tailrec def next(i: Int)(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
-      if (i > 0) next(i - 1)(xformStdlib(f)) else f
-    await(next(recursion)(stdlib_pre_p.future)(stdlibEC))
-  }
+class NoopBenchmark extends OpBenchmark {
+  @tailrec private[this] final def nextS(i: Int, bh: Blackhole,f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+      if (i > 0) { nextS(i - 1, bh, f) } else {  bh.consume(f); f }
 
-  @Benchmark final def stdlib_post(): Result = {
-    @tailrec def next(i: Int)(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
-      if (i > 0) next(i - 1)(xformStdlib(f)) else f
+  @tailrec private[this] final def nextI(i: Int, bh: Blackhole,f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+      if (i > 0) { nextI(i - 1, bh, f) } else { bh.consume(f); f }
 
+  @Benchmark final def stdlib_pre(bh: Blackhole): Result =
+    await(nextS(recursion, bh, stdlib_pre_p.future)(stdlibEC))
+
+  @Benchmark final def stdlib_post(bh: Blackhole): Result = {
     val stdlib_post_p = stdlib.Promise[Result]()
-    val f = next(recursion)(stdlib_post_p.future)(stdlibEC)
+    val f = nextS(recursion, bh, stdlib_post_p.future)(stdlibEC)
     stdlib_post_p.complete(stdlibSuccess)
     await(f)
   }
 
-  @Benchmark final def improved_pre(): Result = {
-    @tailrec def next(i: Int)(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
-      if (i > 0) next(i - 1)(xformImproved(f)) else f
-    await(next(recursion)(improved_pre_p.future)(improvedEC))
+  @Benchmark final def improved_pre(bh: Blackhole): Result = {
+    await(nextI(recursion, bh, improved_pre_p.future)(improvedEC))
   }
 
-  @Benchmark final def improved_post(): Result = {
-    @tailrec def next(i: Int)(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
-      if (i > 0) next(i - 1)(xformImproved(f)) else f
-
+  @Benchmark final def improved_post(bh: Blackhole): Result = {
     val improved_post_p = improved.Promise[Result]()
-    val f = next(recursion)(improved_post_p.future)(improvedEC)
+    val f = nextI(recursion, bh, improved_post_p.future)(improvedEC)
     improved_post_p.complete(improvedSuccess)
     await(f)
   }
 }
 
-class NoopBenchmark extends OpBenchmark {
-  override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
-    f
-  override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
-    f
-}
-
 class MapBenchmark extends OpBenchmark {
   final val transformationFun = (r: Result) => r
-  override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
-    f.map(transformationFun)
-  override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
-    f.map(transformationFun)
+
+  @tailrec private[this] final def nextS(i: Int, f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+      if (i > 0) { nextS(i - 1, f.map(transformationFun)) } else { f }
+
+  @tailrec private[this] final def nextI(i: Int, f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+      if (i > 0) { nextI(i - 1, f.map(transformationFun)) } else { f }
+
+  @Benchmark final def stdlib_pre(): Result =
+    await(nextS(recursion, stdlib_pre_p.future)(stdlibEC))
+
+  @Benchmark final def stdlib_post(): Result = {
+    val stdlib_post_p = stdlib.Promise[Result]()
+    val f = nextS(recursion, stdlib_post_p.future)(stdlibEC)
+    stdlib_post_p.complete(stdlibSuccess)
+    await(f)
+  }
+
+  @Benchmark final def improved_pre(): Result = {
+    await(nextI(recursion, improved_pre_p.future)(improvedEC))
+  }
+
+  @Benchmark final def improved_post(): Result = {
+    val improved_post_p = improved.Promise[Result]()
+    val f = nextI(recursion, improved_post_p.future)(improvedEC)
+    improved_post_p.complete(improvedSuccess)
+    await(f)
+  }
 }
 
 class FilterBenchmark extends OpBenchmark {
   final val transformationFun = (r: Result) => true
-  override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
-    f.filter(transformationFun)
-  override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
-    f.filter(transformationFun)
+
+  @tailrec private[this] final def nextS(i: Int, f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+      if (i > 0) { nextS(i - 1, f.filter(transformationFun)) } else { f }
+
+  @tailrec private[this] final def nextI(i: Int, f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+      if (i > 0) { nextI(i - 1, f.filter(transformationFun)) } else { f }
+
+  @Benchmark final def stdlib_pre(): Result =
+    await(nextS(recursion, stdlib_pre_p.future)(stdlibEC))
+
+  @Benchmark final def stdlib_post(): Result = {
+    val stdlib_post_p = stdlib.Promise[Result]()
+    val f = nextS(recursion, stdlib_post_p.future)(stdlibEC)
+    stdlib_post_p.complete(stdlibSuccess)
+    await(f)
+  }
+
+  @Benchmark final def improved_pre(): Result = {
+    await(nextI(recursion, improved_pre_p.future)(improvedEC))
+  }
+
+  @Benchmark final def improved_post(): Result = {
+    val improved_post_p = improved.Promise[Result]()
+    val f = nextI(recursion, improved_post_p.future)(improvedEC)
+    improved_post_p.complete(improvedSuccess)
+    await(f)
+  }
 }
 
 class TransformBenchmark extends OpBenchmark {
   final val transformationFun = (t: Try[Result]) => t
-  override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
-    f.transform(transformationFun)
-  override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
-    f.transform(transformationFun)
+
+  @tailrec private[this] final def nextS(i: Int, f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+      if (i > 0) { nextS(i - 1, f.transform(transformationFun)) } else { f }
+
+  @tailrec private[this] final def nextI(i: Int, f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+      if (i > 0) { nextI(i - 1, f.transform(transformationFun)) } else { f }
+
+  @Benchmark final def stdlib_pre(): Result =
+    await(nextS(recursion, stdlib_pre_p.future)(stdlibEC))
+
+  @Benchmark final def stdlib_post(): Result = {
+    val stdlib_post_p = stdlib.Promise[Result]()
+    val f = nextS(recursion, stdlib_post_p.future)(stdlibEC)
+    stdlib_post_p.complete(stdlibSuccess)
+    await(f)
+  }
+
+  @Benchmark final def improved_pre(): Result = {
+    await(nextI(recursion, improved_pre_p.future)(improvedEC))
+  }
+
+  @Benchmark final def improved_post(): Result = {
+    val improved_post_p = improved.Promise[Result]()
+    val f = nextI(recursion, improved_post_p.future)(improvedEC)
+    improved_post_p.complete(improvedSuccess)
+    await(f)
+  }
 }
 
 class TransformWithBenchmark extends OpBenchmark {
   final val transformationFunStdlib = (t: Try[Result]) => stdlib.Future.fromTry(t)
   final val transformationFunImproved = (t: Try[Result]) => improved.Future.fromTry(t)
-  override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
-    f.transformWith(transformationFunStdlib)
-  override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
-    f.transformWith(transformationFunImproved)
+
+  @tailrec private[this] final def nextS(i: Int, f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+      if (i > 0) { nextS(i - 1, f.transformWith(transformationFunStdlib)) } else { f }
+
+  @tailrec private[this] final def nextI(i: Int, f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+      if (i > 0) { nextI(i - 1, f.transformWith(transformationFunImproved)) } else { f }
+
+  @Benchmark final def stdlib_pre(): Result =
+    await(nextS(recursion, stdlib_pre_p.future)(stdlibEC))
+
+  @Benchmark final def stdlib_post(): Result = {
+    val stdlib_post_p = stdlib.Promise[Result]()
+    val f = nextS(recursion, stdlib_post_p.future)(stdlibEC)
+    stdlib_post_p.complete(stdlibSuccess)
+    await(f)
+  }
+
+  @Benchmark final def improved_pre(): Result = {
+    await(nextI(recursion, improved_pre_p.future)(improvedEC))
+  }
+
+  @Benchmark final def improved_post(): Result = {
+    val improved_post_p = improved.Promise[Result]()
+    val f = nextI(recursion, improved_post_p.future)(improvedEC)
+    improved_post_p.complete(improvedSuccess)
+    await(f)
+  }
 }
 
 class FlatMapBenchmark extends OpBenchmark {
   final val transformationFunStdlib = (t: Result) => stdlib.Future.successful(t)
   final val transformationFunImproved = (t: Result) => improved.Future.successful(t)
-  override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
-    f.flatMap(transformationFunStdlib)
-  override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
-    f.flatMap(transformationFunImproved)
+
+  @tailrec private[this] final def nextS(i: Int, f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+      if (i > 0) { nextS(i - 1, f.flatMap(transformationFunStdlib)) } else { f }
+
+  @tailrec private[this] final def nextI(i: Int, f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+      if (i > 0) { nextI(i - 1, f.flatMap(transformationFunImproved)) } else { f }
+
+  @Benchmark final def stdlib_pre(): Result =
+    await(nextS(recursion, stdlib_pre_p.future)(stdlibEC))
+
+  @Benchmark final def stdlib_post(): Result = {
+    val stdlib_post_p = stdlib.Promise[Result]()
+    val f = nextS(recursion, stdlib_post_p.future)(stdlibEC)
+    stdlib_post_p.complete(stdlibSuccess)
+    await(f)
+  }
+
+  @Benchmark final def improved_pre(): Result = {
+    await(nextI(recursion, improved_pre_p.future)(improvedEC))
+  }
+
+  @Benchmark final def improved_post(): Result = {
+    val improved_post_p = improved.Promise[Result]()
+    val f = nextI(recursion, improved_post_p.future)(improvedEC)
+    improved_post_p.complete(improvedSuccess)
+    await(f)
+  }
 }
 
 class ZipWithBenchmark extends OpBenchmark {
   final val transformationFun = (t1: Result, t2: Result) => t2
-  override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
-    f.zipWith(f)(transformationFun)
-  override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
-    f.zipWith(f)(transformationFun)
+
+  @tailrec private[this] final def nextS(i: Int, f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+      if (i > 0) { nextS(i - 1, f.zipWith(f)(transformationFun)) } else { f }
+
+  @tailrec private[this] final def nextI(i: Int, f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+      if (i > 0) { nextI(i - 1, f.zipWith(f)(transformationFun)) } else { f }
+
+  @Benchmark final def stdlib_pre(): Result =
+    await(nextS(recursion, stdlib_pre_p.future)(stdlibEC))
+
+  @Benchmark final def stdlib_post(): Result = {
+    val stdlib_post_p = stdlib.Promise[Result]()
+    val f = nextS(recursion, stdlib_post_p.future)(stdlibEC)
+    stdlib_post_p.complete(stdlibSuccess)
+    await(f)
+  }
+
+  @Benchmark final def improved_pre(): Result = {
+    await(nextI(recursion, improved_pre_p.future)(improvedEC))
+  }
+
+  @Benchmark final def improved_post(): Result = {
+    val improved_post_p = improved.Promise[Result]()
+    val f = nextI(recursion, improved_post_p.future)(improvedEC)
+    improved_post_p.complete(improvedSuccess)
+    await(f)
+  }
 }
 
 class AndThenBenchmark extends OpBenchmark {
   final val effect: PartialFunction[Try[Result], Unit] = { case t: Try[Result] => () }
-  override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
-    f.andThen(effect)
-  override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
-    f.andThen(effect)
+  
+  @tailrec private[this] final def nextS(i: Int, f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+      if (i > 0) { nextS(i - 1, f.andThen(effect)) } else { f }
+
+  @tailrec private[this] final def nextI(i: Int, f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+      if (i > 0) { nextI(i - 1, f.andThen(effect)) } else { f }
+
+  @Benchmark final def stdlib_pre(): Result =
+    await(nextS(recursion, stdlib_pre_p.future)(stdlibEC))
+
+  @Benchmark final def stdlib_post(): Result = {
+    val stdlib_post_p = stdlib.Promise[Result]()
+    val f = nextS(recursion, stdlib_post_p.future)(stdlibEC)
+    stdlib_post_p.complete(stdlibSuccess)
+    await(f)
+  }
+
+  @Benchmark final def improved_pre(): Result = {
+    await(nextI(recursion, improved_pre_p.future)(improvedEC))
+  }
+
+  @Benchmark final def improved_post(): Result = {
+    val improved_post_p = improved.Promise[Result]()
+    val f = nextI(recursion, improved_post_p.future)(improvedEC)
+    improved_post_p.complete(improvedSuccess)
+    await(f)
+  }
 }
 
 class VariousBenchmark extends OpBenchmark {
@@ -192,10 +353,33 @@ class VariousBenchmark extends OpBenchmark {
   final val filterFun: Result => Boolean = _ ne null
   final val transformFun: Try[Result] => Try[Result] = _ => throw null
   final val recoverFun: PartialFunction[Throwable, Result] = { case _ => "OK" }
-  override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
-    f.map(mapFun).flatMap(stdlibFlatMapFun).filter(filterFun).zipWith(f)((a, b) => a).transform(transformFun).recover(recoverFun)
-  override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
-    f.map(mapFun).flatMap(improvedFlatMapFun).filter(filterFun).zipWith(f)((a, b) => a).transform(transformFun).recover(recoverFun)
+
+  @tailrec private[this] final def nextS(i: Int, f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+      if (i > 0) { nextS(i - 1, f.map(mapFun).flatMap(stdlibFlatMapFun).filter(filterFun).zipWith(f)((a, b) => a).transform(transformFun).recover(recoverFun)) } else { f }
+
+  @tailrec private[this] final def nextI(i: Int, f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+      if (i > 0) { nextI(i - 1, f.map(mapFun).flatMap(improvedFlatMapFun).filter(filterFun).zipWith(f)((a, b) => a).transform(transformFun).recover(recoverFun)) } else { f }
+
+  @Benchmark final def stdlib_pre(): Result =
+    await(nextS(recursion, stdlib_pre_p.future)(stdlibEC))
+
+  @Benchmark final def stdlib_post(): Result = {
+    val stdlib_post_p = stdlib.Promise[Result]()
+    val f = nextS(recursion, stdlib_post_p.future)(stdlibEC)
+    stdlib_post_p.complete(stdlibSuccess)
+    await(f)
+  }
+
+  @Benchmark final def improved_pre(): Result = {
+    await(nextI(recursion, improved_pre_p.future)(improvedEC))
+  }
+
+  @Benchmark final def improved_post(): Result = {
+    val improved_post_p = improved.Promise[Result]()
+    val f = nextI(recursion, improved_post_p.future)(improvedEC)
+    improved_post_p.complete(improvedSuccess)
+    await(f)
+  }
 }
 
 class LoopBenchmark extends OpBenchmark {
@@ -222,16 +406,30 @@ class LoopBenchmark extends OpBenchmark {
     else if (i < size) post_improved_loop(i + 1).flatMap(i => improved.Future(i))
     else improved.Future(i)
 
-  override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
-    if (f eq stdlib_pre_p.future) f.flatMap(s => pre_stdlib_loop(100).map(_ => s)) else f.flatMap(s => post_stdlib_loop(100).map(_ => s))
 
-  override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
-    if (f eq improved_pre_p.future) f.flatMap(s => pre_improved_loop(100).map(_ => s)) else f.flatMap(s => post_improved_loop(100).map(_ => s))
+  @Benchmark final def stdlib_pre(): Result = {
+    implicit val ec = stdlibEC
+    await(stdlib_pre_p.future.flatMap(s => pre_stdlib_loop(recursion).map(_ => s)))
+  }
+
+  @Benchmark final def stdlib_post(): Result = {
+    implicit val ec = stdlibEC
+    val stdlib_post_p = stdlib.Promise[Result]()
+    val f = stdlib_post_p.future.flatMap(s => post_stdlib_loop(recursion).map(_ => s))
+    stdlib_post_p.complete(stdlibSuccess)
+    await(f)
+  }
+
+  @Benchmark final def improved_pre(): Result = {
+    implicit val ec = improvedEC
+    await(improved_pre_p.future.flatMap(s => pre_improved_loop(recursion).map(_ => s)))
+  }
+
+  @Benchmark final def improved_post(): Result = {
+    implicit val ec = improvedEC
+    val improved_post_p = improved.Promise[Result]()
+    val f = improved_post_p.future.flatMap(s => post_improved_loop(recursion).map(_ => s))
+    improved_post_p.complete(improvedSuccess)
+    await(f)
+  }
 }
-
-/*class ZipBenchmark extends OpBenchmark {
-  override final def xformStdlib(f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
-    f.zip(f)
-  override final def xformImproved(f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
-    f.zip(f)
-}*/

@@ -56,6 +56,7 @@ private[future] final object Promise {
       @tailrec private[this] final def compressedRoot(linked: Link[T]): DefaultPromise[T] = {
         val current = linked.get()
         val target = root(current)
+        // This tries to make the ideal Links point directly to the *end* of the link chain. Can we do better when the end is resolved?
         if ((current eq target) || compareAndSet(current, target)) target
         else compressedRoot(linked)
       }
@@ -218,8 +219,8 @@ private[future] final object Promise {
       val state = get()
       if (state.isInstanceOf[Try[T]]) false
       else /*if (state.isInstaceOf[Link[T]]*/ {
-        val r = tryComplete0(state, resolve(value))
-        if (state.isInstanceOf[Link[T]])
+        val r = tryComplete0(state, resolve(value)) // TODO possibly use the resolved value here if tryComplete0 returns true, to unlink with
+        if (state.isInstanceOf[Link[T]]) // TODO evaluate efficiency of performing this here vs performing it on root-traversal
           state.asInstanceOf[Link[T]].unlink(this)
         r
       }
@@ -338,22 +339,22 @@ private[future] final object Promise {
 
     // Gets invoked by run()
     // TODO: consider different encoding where result handling is tableswitched iso branched
-    private[this] final def complete(r: TM[T]): Unit =
+    private[this] final def handle(r: TM[T]): Unit =
       if (r.isInstanceOf[Try[T]])
-        this.complete(r.asInstanceOf[Try[T]])
+        this.tryComplete(r.asInstanceOf[Try[T]])
       else if (r.isInstanceOf[Future[T]]) {
         if (r.isInstanceOf[DefaultPromise[T]])
           r.asInstanceOf[DefaultPromise[T]].linkRootOf(this)
         else
           this.completeWith(r.asInstanceOf[Future[T]])
       } else //if (r.isInstanceOf[T @unchecked])
-        this.success(r.asInstanceOf[T])
+        this.trySuccess(r.asInstanceOf[T])
       // else throw new IllegalStateException("Result value of type ${r.getClass} not valid")
 
     // Gets invoked by the ExecutionContext, when we have a value to transform.
     // Invariant: if (v.isInstanceOf[Try[F]] && (fun ne null))
     override final def run(): Unit =
-        try complete(_fun(_arg.asInstanceOf[Try[F]])) catch {
+        try handle(_fun(_arg.asInstanceOf[Try[F]])) catch {
           case t if NonFatal(t) => this.tryFailure(t)
         } finally { // allow these to GC
           _fun = null

@@ -60,18 +60,19 @@ trait Promise[T] {
    *
    *  @return   This promise
    */
-  final def completeWith(other: Future[T]): this.type = tryCompleteWith(other)
-
-  /** Attempts to complete this promise with the specified future, once that future is completed.
-   *
-   *  @return   This promise
-   */
-  final def tryCompleteWith(other: Future[T]): this.type = {
+   def completeWith(other: Future[T]): this.type = {
     if (other ne this.future) { // this tryCompleteWith this doesn't make much sense
       other.onComplete(this tryComplete _)(Future.InternalCallbackExecutor)
     }
     this
   }
+
+  /** Attempts to complete this promise with the specified future, once that future is completed.
+   *
+   *  @return   This promise
+   */
+   @deprecated("Since this method is semantically equivalent to `completeWith`, use that instead.", "2.13")
+  final def tryCompleteWith(other: Future[T]): this.type = completeWith(other)
 
   /** Completes the promise with a value.
    *
