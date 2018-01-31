@@ -1,10 +1,12 @@
 name := "scala-futures"
 
-scalaVersion := "2.12.0"
+scalaVersion := "2.12.4"
 
 lazy val root = project in file(".")
 
 lazy val benches = project.in(file("benches")).dependsOn(root)
+
+scalacOptions in Compile ++= Seq("-encoding", "UTF-8", "-target:jvm-1.8", "-feature", "-unchecked", "-deprecation", "-Xlog-reflective-calls", "-Xlint", "-opt:l:project")
 
 libraryDependencies += "junit" % "junit" % "4.11" % "test"
 

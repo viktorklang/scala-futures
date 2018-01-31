@@ -9,45 +9,54 @@ import scala.util.Try
 import scala.{concurrent => stdlib}
 import scala.{future => improved}
 
-abstract class TryCompleteBenchFun { 
+abstract class TryCompleteWithBenchFun { 
   def setup(): Unit
-  def apply(ops: Int): Int
+  def apply(ops: Int): stdlib.Awaitable[Unit]
   def teardown(): Unit
 }
 
-final class StdlibTryCompleteBenchFun(val result: Try[Unit]) extends TryCompleteBenchFun {
+final class StdlibTryCompleteWithBenchFun(final val v: Try[Unit]) extends TryCompleteWithBenchFun {
   var p: stdlib.Promise[Unit] = _
-  final def setup(): Unit = {
+  var result: stdlib.Promise[Unit] = _
+  override final def setup(): Unit = {
     p = stdlib.Promise[Unit]
+    result = stdlib.Promise[Unit]
   }
-  final def apply(ops: Int): Int = {
+  override final def apply(ops: Int): stdlib.Awaitable[Unit] = {
     var i = ops
     while(i > 0) {
-      p.tryComplete(result)
+      p.tryCompleteWith(result.future)
       i -= 1
     }
-    i
+    result.complete(v)
+    p.future
   }
-  final def teardown(): Unit = {
+
+  override final def teardown(): Unit = {
     p = null
+    result = null
   }
 }
 
-final class ImprovedTryCompleteBenchFun(val result: Try[Unit]) extends TryCompleteBenchFun {
+final class ImprovedTryCompleteWithBenchFun(final val v: Try[Unit]) extends TryCompleteWithBenchFun {
   var p: improved.Promise[Unit] = _
+  var result: improved.Promise[Unit] = _
   final def setup(): Unit = {
     p = improved.Promise[Unit]
+    result = improved.Promise[Unit]
   }
-  final def apply(ops: Int): Int = {
+  final def apply(ops: Int): stdlib.Awaitable[Unit] = {
     var i = ops
     while(i > 0) {
-      p.tryComplete(result)
+      p.tryCompleteWith(result.future)
       i -= 1
     }
-    i
+    result.complete(v)
+    p.future
   }
   final def teardown(): Unit = {
     p = null
+    result = null
   }
 }
 
@@ -57,7 +66,7 @@ final class ImprovedTryCompleteBenchFun(val result: Try[Unit]) extends TryComple
 @Warmup(iterations = 1000)
 @Measurement(iterations = 10000)
 @Fork(value = 1, jvmArgsAppend = Array("-ea","-server","-XX:+UseCompressedOops","-XX:+AggressiveOpts","-XX:+AlwaysPreTouch", "-XX:+UseCondCardMark"))
-class CompletionBenchmark {
+class CompletionWithBenchmark {
 
   @Param(Array[String]("stdlib", "improved"))
   var impl: String = _
@@ -65,7 +74,9 @@ class CompletionBenchmark {
   @Param(Array[String]("success", "failure"))
   var result: String = _
 
-  var benchFun: TryCompleteBenchFun = _
+  var benchFun: TryCompleteWithBenchFun = _
+
+  val timeout = 60.seconds
 
   @Setup(Level.Trial)
   final def startup = {
@@ -76,8 +87,8 @@ class CompletionBenchmark {
     }
 
     benchFun = impl match {
-      case "stdlib" => new StdlibTryCompleteBenchFun(r)
-      case "improved" => new ImprovedTryCompleteBenchFun(r)
+      case "stdlib" => new StdlibTryCompleteWithBenchFun(r)
+      case "improved" => new ImprovedTryCompleteWithBenchFun(r)
       case other => throw new IllegalArgumentException("impl must be either 'stdlib' or 'improved' but was '" + other + "'")
     }
   }
@@ -90,29 +101,29 @@ class CompletionBenchmark {
 
   @Benchmark
   @OperationsPerInvocation(1)
-  final def tryComplete_1 = benchFun(1)
+  final def tryCompleteWith_1 = stdlib.Await.ready(benchFun(1), timeout)
 
-  /*@Benchmark
+  @Benchmark
   @OperationsPerInvocation(2)
-  final def tryComplete_2 = benchFun(2)
+  final def tryCompleteWith_2 = stdlib.Await.ready(benchFun(2), timeout)
 
   @Benchmark
   @OperationsPerInvocation(4)
-  final def tryComplete_4 = benchFun(4)
+  final def tryCompleteWith_4 = stdlib.Await.ready(benchFun(4), timeout)
 
   @Benchmark
   @OperationsPerInvocation(16)
-  final def tryComplete_16 = benchFun(16)
+  final def tryCompleteWith_16 = stdlib.Await.ready(benchFun(16), timeout)
 
   @Benchmark
   @OperationsPerInvocation(64)
-  final def tryComplete_64 = benchFun(64)
+  final def tryCompleteWith_64 = stdlib.Await.ready(benchFun(64), timeout)
 
   @Benchmark
   @OperationsPerInvocation(1024)
-  final def tryComplete_1024 = benchFun(1024)*/
+  final def tryCompleteWith_1024 = stdlib.Await.ready(benchFun(1024), timeout)
 
   @Benchmark
   @OperationsPerInvocation(8192)
-  final def tryComplete_8192 = benchFun(8192)
+  final def tryCompleteWith_8192 = stdlib.Await.ready(benchFun(8192), timeout)
 }
