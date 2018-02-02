@@ -8,7 +8,7 @@
 
 package scala.future
 
-import scala.concurrent.{ExecutionContext, CanAwait}
+import scala.concurrent.CanAwait
 import java.util.ArrayDeque
 import java.util.concurrent.Executor
 import scala.annotation.tailrec

@@ -51,17 +51,21 @@ abstract class AbstractBaseBenchmark {
         (scala.concurrent.InternalCallbackExecutor().asInstanceOf[Executor], scala.future.Future.InternalCallbackExecutor)
     }
 
-    stdlibEC = new stdlib.ExecutionContext {
-      private[this] val g = executorStdlib
-      override final def execute(r: Runnable) = g.execute(r)
-      override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
-    }
+    stdlibEC =
+      if (executorStdlib.isInstanceOf[stdlib.ExecutionContext]) executorStdlib.asInstanceOf[stdlib.ExecutionContext]
+      else new stdlib.ExecutionContext with stdlib.BatchingEC {
+        private[this] final val g = executorStdlib
+        override final def unbatchedExecute(r: Runnable) = g.execute(r)
+        override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
+      }
 
-    improvedEC = new stdlib.ExecutionContext {
-      private[this] val g = executorImproved
-      override final def execute(r: Runnable) = g.execute(r)
-      override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
-    }
+    improvedEC =
+      if (executorImproved.isInstanceOf[stdlib.ExecutionContext]) executorImproved.asInstanceOf[stdlib.ExecutionContext]
+      else new stdlib.ExecutionContext with BatchingExecutor {
+        private[this] final val g = executorImproved
+        override final def unbatchedExecute(r: Runnable) = g.execute(r)
+        override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
+      }
   }
 
   @TearDown(Level.Trial)
@@ -408,8 +412,8 @@ class VariousBenchmark extends OpBenchmark {
 }
 
 class LoopBenchmark extends OpBenchmark {
-  val depth = 10
-  val size  = 1000
+  val depth = 50
+  val size  = 2000
 
   def pre_stdlib_loop(i: Int)(implicit ec: stdlib.ExecutionContext): stdlib.Future[Int] =
     if (i % depth == 0) stdlib.Future.successful(i + 1).flatMap(pre_stdlib_loop)
