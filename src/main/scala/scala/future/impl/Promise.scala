@@ -417,12 +417,12 @@ private[future] final object Promise {
 
     private[this] final def doForeach(): Unit = {
       _fun(_arg.asInstanceOf[Success[F]].value)
-      tryComplete(scala.future.impl.Future.successOfUnit.asInstanceOf[Try[T]]) //FIXME
+      tryComplete(Future.successOfUnit.asInstanceOf[Try[T]]) //FIXME
     }
 
     private[this] final def doOnComplete(): Unit = {
       _fun(_arg)
-      tryComplete(scala.future.impl.Future.asInstanceOf[Try[T]]) //FIXME
+      tryComplete(Future.asInstanceOf[Try[T]]) //FIXME
     }
 
     private[this] final def doRecover(): Unit =
@@ -430,16 +430,16 @@ private[future] final object Promise {
 
     private[this] final def doRecoverWith(): Unit = {
       val fail =_arg.asInstanceOf[Failure[F]]
-      val r = _fun.asInstanceOf[PartialFunction[Throwable, Future[T]]].applyOrElse(fail.exception, scala.future.impl.Future.recoverWithFailed)
-      if (r ne scala.future.impl.Future.recoverWithFailedMarker) completeFuture(r)
+      val r = _fun.asInstanceOf[PartialFunction[Throwable, Future[T]]].applyOrElse(fail.exception, Future.recoverWithFailed)
+      if (r ne Future.recoverWithFailedMarker) completeFuture(r)
       else tryComplete(fail.asInstanceOf[Failure[T]])
     }
 
     private[this] final def doFilter(): Unit =
-      tryComplete(if(_fun.asInstanceOf[F => Boolean](_arg.asInstanceOf[Success[F]].value)) _arg.asInstanceOf[Try[T]] else scala.future.impl.Future.filterFailure)
+      tryComplete(if(_fun.asInstanceOf[F => Boolean](_arg.asInstanceOf[Success[F]].value)) _arg.asInstanceOf[Try[T]] else Future.filterFailure)
 
     private[this] final def doCollect(): Unit =
-      trySuccess(_fun.asInstanceOf[PartialFunction[F, T]].applyOrElse(_arg.asInstanceOf[Success[F]].value, scala.future.impl.Future.collectFailed))
+      trySuccess(_fun.asInstanceOf[PartialFunction[F, T]].applyOrElse(_arg.asInstanceOf[Success[F]].value, Future.collectFailed))
   }
 
   final class ManyCallbacks[-T](final val first: Callbacks[T], final val last: Callbacks[T]) extends Callbacks[T] {
