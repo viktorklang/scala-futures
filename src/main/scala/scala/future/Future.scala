@@ -12,7 +12,7 @@ import scala.language.higherKinds
 import scala.concurrent.{ExecutionContext, Awaitable, CanAwait}
 
 import java.util.concurrent.{CountDownLatch, TimeUnit, TimeoutException}
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
 
 import scala.util.control.{NonFatal, NoStackTrace}
 import scala.util.{Try, Success, Failure}
@@ -749,8 +749,14 @@ object Future {
     if (futures.isEmpty) Future.failed[T](Future.firstCompletedOfException)
     else {
     val p = Promise[T]()
-    val completeFirst: Try[T] => Unit = p tryComplete _
-    futures.foreach(_ onComplete completeFirst)
+    val firstCompleteHandler = new AtomicReference[Promise[T]](p) with (Try[T] => Unit) {
+      override def apply(v1: Try[T]): Unit =  {
+        val r = getAndSet(null)
+        if (r ne null)
+          r tryComplete v1
+      }
+    }
+    futures foreach { _ onComplete firstCompleteHandler }
     p.future
   }
 

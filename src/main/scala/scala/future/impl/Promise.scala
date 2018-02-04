@@ -422,7 +422,7 @@ private[future] final object Promise {
 
     private[this] final def doOnComplete(): Unit = {
       _fun(_arg)
-      tryComplete(Future.asInstanceOf[Try[T]]) //FIXME
+      tryComplete(Future.successOfUnit.asInstanceOf[Try[T]]) //FIXME
     }
 
     private[this] final def doRecover(): Unit =

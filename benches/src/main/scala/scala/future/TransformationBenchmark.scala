@@ -14,7 +14,7 @@ import scala.{future => improved}
 @OutputTimeUnit(TimeUnit.MILLISECONDS)
 @Warmup(iterations = 1000)
 @Measurement(iterations = 10000)
-@Fork(value = 1, jvmArgsAppend = Array(/*"-agentpath:/Applications/YourKit-Java-Profiler-2017.02.app/Contents/Resources/bin/mac/libyjpagent.jnilib", */"-ea", "-server", "-XX:+UseCompressedOops", "-XX:+AlwaysPreTouch", "-XX:+UseCondCardMark"))
+@Fork(value = 1, jvmArgsAppend = Array(/*"-agentpath:/Applications/YourKit-Java-Profiler-2017.02.app/Contents/Resources/bin/mac/libyjpagent.jnilib", */ "-ea", "-server", "-XX:+UseCompressedOops", "-XX:+AlwaysPreTouch", "-XX:+UseCondCardMark"))
 @Threads(value = 1)
 abstract class AbstractBaseBenchmark {
   @Param(Array[String]("fjp", "fix", "fie"))
@@ -491,3 +491,33 @@ class SequenceBenchmark extends OpBenchmark {
     await(f)
   }
 }
+
+class FirstCompletedOfBenchmark extends OpBenchmark {
+
+  @Benchmark final def stdlib_pre(): AnyRef = {
+    implicit val ec = stdlibEC
+    await(stdlib.Future.firstCompletedOf(1 to recursion map { _ => stdlib_pre_s_p.future }))
+  }
+
+  @Benchmark final def stdlib_post(): AnyRef = {
+    implicit val ec = stdlibEC
+    val stdlib_post_p = stdlib.Promise[Result]()
+    val f = stdlib.Future.firstCompletedOf(1 to recursion map { _ => stdlib_post_p.future })
+    stdlib_post_p.complete(stdlibSuccess)
+    await(f)
+  }
+
+  @Benchmark final def improved_pre(): AnyRef = {
+    implicit val ec = improvedEC
+    await(improved.Future.firstCompletedOf(1 to recursion map { _ => improved_pre_s_p.future }))
+  }
+
+  @Benchmark final def improved_post(): AnyRef = {
+        implicit val ec = improvedEC
+    val improved_post_p = improved.Promise[Result]()
+    val f = improved.Future.firstCompletedOf(1 to recursion map { _ => improved_post_p.future })
+    improved_post_p.complete(improvedSuccess)
+    await(f)
+  }
+}
+
