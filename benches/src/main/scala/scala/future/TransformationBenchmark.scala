@@ -14,7 +14,7 @@ import scala.{future => improved}
 @OutputTimeUnit(TimeUnit.MILLISECONDS)
 @Warmup(iterations = 1000)
 @Measurement(iterations = 10000)
-@Fork(value = 1, jvmArgsAppend = Array(/*"-agentpath:/Applications/YourKit-Java-Profiler-2017.02.app/Contents/Resources/bin/mac/libyjpagent.jnilib", */ "-ea", "-server", "-XX:+UseCompressedOops", "-XX:+AlwaysPreTouch", "-XX:+UseCondCardMark"))
+@Fork(value = 1, jvmArgsAppend = Array(/*"-agentpath:/Applications/YourKit-Java-Profiler-2017.02.app/Contents/Resources/bin/mac/libyjpagent.jnilib", */ "-Xmx512M", "-Xms512M", "-ea", "-server", "-XX:+UseCompressedOops", "-XX:+AlwaysPreTouch", "-XX:+UseCondCardMark"))
 @Threads(value = 1)
 abstract class AbstractBaseBenchmark {
   @Param(Array[String]("fjp", "fix", "fie"))
@@ -47,24 +47,42 @@ abstract class AbstractBaseBenchmark {
         val ftp = java.util.concurrent.Executors.newFixedThreadPool(threads)
         executor = ftp
         (ftp, ftp)
+      case "gbl" =>
+        (stdlib.ExecutionContext.global, stdlib.ExecutionContext.global)
       case "fie" =>
         (scala.concurrent.InternalCallbackExecutor().asInstanceOf[Executor], scala.future.Future.InternalCallbackExecutor)
     }
 
     stdlibEC =
       if (executorStdlib.isInstanceOf[stdlib.ExecutionContext]) executorStdlib.asInstanceOf[stdlib.ExecutionContext]
-      else new stdlib.ExecutionContext with stdlib.BatchingEC {
-        private[this] final val g = executorStdlib
-        override final def unbatchedExecute(r: Runnable) = g.execute(r)
-        override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
+      else if (true) {
+        new stdlib.ExecutionContext with stdlib.BatchingEC {
+          private[this] final val g = executorStdlib
+          override final def unbatchedExecute(r: Runnable) = g.execute(r)
+          override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
+        }
+      } else {
+        new stdlib.ExecutionContext {
+          private[this] final val g = executorStdlib
+          override final def execute(r: Runnable) = g.execute(r)
+          override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
+        }
       }
 
     improvedEC =
       if (executorImproved.isInstanceOf[stdlib.ExecutionContext]) executorImproved.asInstanceOf[stdlib.ExecutionContext]
-      else new stdlib.ExecutionContext with BatchingExecutor {
-        private[this] final val g = executorImproved
-        override final def unbatchedExecute(r: Runnable) = g.execute(r)
-        override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
+      else if (true) {
+        new stdlib.ExecutionContext with improved.BatchingExecutor {
+          private[this] final val g = executorImproved
+          override final def unbatchedExecute(r: Runnable) = g.execute(r)
+          override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
+        }
+      } else {
+        new stdlib.ExecutionContext {
+          private[this] final val g = executorImproved
+          override final def execute(r: Runnable) = g.execute(r)
+          override final def reportFailure(t: Throwable) = t.printStackTrace(System.err)
+        }
       }
   }
 
