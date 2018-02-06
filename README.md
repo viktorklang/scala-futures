@@ -15,13 +15,13 @@ Examples:
 To run the JMH benchmark for completing Promises:
 
 ```
-jmh:runMain scala.future.BenchRunner .*CompletionBenchmark.*
+jmh:runMain scala.future.BenchRunner -p pool=fie -p threads=1 -p recursion=8192 -i 20 -wi 15 -f1 -t1 CompleteBenchmark*
 ```
 
 To run the JMH benchmark for adding callbacks to Futures:
 
 ```
-jmh:runMain scala.future.BenchRunner .*CallbackBenchmark.*
+jmh:runMain scala.future.BenchRunner -p pool=fie -p threads=1 -p recursion=8192 -i 20 -wi 15 -f1 -t1 CallbackBenchmark*
 ```
 
 Please open Issues or submit Pull Requests to propose more benchmarks so we can attempt to ensure that there are no regressions and so that we can quantify optimization improvements across different hardware architectures and OS setups.
