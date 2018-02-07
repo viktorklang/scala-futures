@@ -336,11 +336,11 @@ private[future] final object Promise {
     // submitWithValue *happens-before* run(), through ExecutionContext.execute.
     // Invariant: _arg is `ExecutionContext`
     // requireNonNull(v) will hold as guarded by `resolve`
-    final def submitWithValue(v: Try[F]): Unit =
+    final def submitWithValue(resolved: Try[F]): Unit =
       if (_fun ne null) {
         val executor = _arg.asInstanceOf[ExecutionContext]
         try {
-          _arg = v
+          _arg = resolved
           executor.execute(this) // Safe publication of _arg = v (and _fun)
         } catch {
           case t if NonFatal(t) =>
@@ -349,26 +349,8 @@ private[future] final object Promise {
         }
       }
 
-    private[this] final def relevant(): Boolean = {
-      val isSuccess = _arg.isInstanceOf[Success[F]]
-      (_xform.asInstanceOf[Int]: @switch) match {
-        case Xform_map           => isSuccess
-        case Xform_flatMap       => isSuccess
-        case Xform_transform     => true
-        case Xform_transformWith => true
-        case Xform_foreach       => isSuccess
-        case Xform_onComplete    => true
-        case Xform_recover       => !isSuccess
-        case Xform_recoverWith   => !isSuccess
-        case Xform_filter        => isSuccess
-        case Xform_collect       => isSuccess
-        case _                   => false
-      }
-    }
-
     // Gets invoked by run()
     private[this] final def handle(): Unit =
-      if (relevant()) {
         (_xform.asInstanceOf[Int]: @switch) match {
           case Xform_map           => doMap()
           case Xform_flatMap       => doFlatMap()
@@ -382,7 +364,6 @@ private[future] final object Promise {
           case Xform_collect       => doCollect()
           case _                   => ()
         }
-      } else tryComplete(_arg.asInstanceOf[Try[T]])
 
     // Gets invoked by the ExecutionContext, when we have a value to transform.
     // Invariant: if (_arg.isInstanceOf[Try[F]] && (_fun ne null))
@@ -401,16 +382,27 @@ private[future] final object Promise {
       else completeWith(f)
     }
 
-    private[this] final def doMap(): Unit = trySuccess(_fun(_arg.asInstanceOf[Success[F]].value).asInstanceOf[T])
 
-    private[this] final def doFlatMap(): Unit = completeFuture(_fun(_arg.asInstanceOf[Success[F]].value).asInstanceOf[Future[T]])
+    private[this] final def doMap(): Unit = {
+      val a = _arg
+      if (a.isInstanceOf[Success[F]]) trySuccess(_fun(a.asInstanceOf[Success[F]].value).asInstanceOf[T])
+      else tryComplete(a.asInstanceOf[Try[T]])
+    }
+
+    private[this] final def doFlatMap(): Unit = {
+      val a = _arg
+      if (a.isInstanceOf[Success[F]]) completeFuture(_fun(a.asInstanceOf[Success[F]].value).asInstanceOf[Future[T]])
+      else tryComplete(a.asInstanceOf[Try[T]])
+    }
 
     private[this] final def doTransform(): Unit = tryComplete(_fun(_arg).asInstanceOf[Try[T]])
 
     private[this] final def doTransformWith(): Unit = completeFuture(_fun(_arg).asInstanceOf[Future[T]])
 
     private[this] final def doForeach(): Unit = {
-      _fun(_arg.asInstanceOf[Success[F]].value)
+      val a = _arg
+      if (a.isInstanceOf[Success[F]]) _fun(a.asInstanceOf[Success[F]].value)
+
       tryComplete(Future.successOfUnit.asInstanceOf[Try[T]]) //FIXME
     }
 
@@ -420,20 +412,31 @@ private[future] final object Promise {
     }
 
     private[this] final def doRecover(): Unit =
-     tryComplete(_arg.asInstanceOf[Try[T]].recover(_fun.asInstanceOf[PartialFunction[Throwable, T]]))
+      tryComplete(_arg.asInstanceOf[Try[T]].recover(_fun.asInstanceOf[PartialFunction[Throwable, T]]))
 
     private[this] final def doRecoverWith(): Unit = {
-      val fail =_arg.asInstanceOf[Failure[F]]
-      val r = _fun.asInstanceOf[PartialFunction[Throwable, Future[T]]].applyOrElse(fail.exception, Future.recoverWithFailed)
-      if (r ne Future.recoverWithFailedMarker) completeFuture(r)
-      else tryComplete(fail.asInstanceOf[Failure[T]])
+      val a = _arg
+      if (a.isInstanceOf[Failure[F]]) {
+        val fail = a.asInstanceOf[Failure[F]]
+        val r = _fun.asInstanceOf[PartialFunction[Throwable, Future[T]]].applyOrElse(fail.exception, Future.recoverWithFailed)
+        if (r ne Future.recoverWithFailedMarker) completeFuture(r)
+        else tryComplete(fail.asInstanceOf[Failure[T]])
+      } else tryComplete(a.asInstanceOf[Try[T]])
     }
 
-    private[this] final def doFilter(): Unit =
-      tryComplete(if(_fun.asInstanceOf[F => Boolean](_arg.asInstanceOf[Success[F]].value)) _arg.asInstanceOf[Try[T]] else Future.filterFailure)
+    private[this] final def doFilter(): Unit = {
+      val a = _arg
+      tryComplete(
+        if (a.isInstanceOf[Failure[F]] || _fun.asInstanceOf[F => Boolean](a.asInstanceOf[Success[F]].value)) a.asInstanceOf[Try[T]]
+        else Future.filterFailure
+      )
+    }
 
-    private[this] final def doCollect(): Unit =
-      trySuccess(_fun.asInstanceOf[PartialFunction[F, T]].applyOrElse(_arg.asInstanceOf[Success[F]].value, Future.collectFailed))
+    private[this] final def doCollect(): Unit = {
+      val a = _arg
+      if (a.isInstanceOf[Success[F]]) trySuccess(_fun.asInstanceOf[PartialFunction[F, T]].applyOrElse(a.asInstanceOf[Success[F]].value, Future.collectFailed))
+      else tryComplete(a.asInstanceOf[Try[T]])
+    }
   }
 
   final class ManyCallbacks[-T](final val first: Callbacks[T], final val last: Callbacks[T]) extends Callbacks[T] {
