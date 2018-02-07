@@ -336,30 +336,22 @@ private[future] final object Promise {
     // submitWithValue *happens-before* run(), through ExecutionContext.execute.
     // Invariant: _arg is `ExecutionContext`
     // requireNonNull(v) will hold as guarded by `resolve`
-    final def submitWithValue(v: Try[F]): Unit = 
-      if (_fun ne null) { // Noop's, and if already executed: _fun is null
-        if (shouldSubmit(v)) submit(v)
-        else tryComplete(v.asInstanceOf[Try[T]])
+    final def submitWithValue(v: Try[F]): Unit =
+      if (_fun ne null) {
+        val executor = _arg.asInstanceOf[ExecutionContext]
+        try {
+          _arg = v
+          executor.execute(this) // Safe publication of _arg = v (and _fun)
+        } catch {
+          case t if NonFatal(t) =>
+            if (!tryFailure(t))
+              executor.reportFailure(t)
+        }
       }
 
-    private[this] final def submit(v: Try[F]): Unit = {
-      val executor = _arg.asInstanceOf[ExecutionContext]
-      try {
-        _arg = v
-        executor.execute(this) // Safe publication of _arg = v (and _fun)
-      } catch {
-        case t if NonFatal(t) =>
-          if (!tryFailure(t))
-            executor.reportFailure(t)
-      }
-    }
-
-    private[this] final def shouldSubmit(v: Try[F]): Boolean = {
-      val isSuccess = v.isInstanceOf[Success[F]]
+    private[this] final def relevant(): Boolean = {
+      val isSuccess = _arg.isInstanceOf[Success[F]]
       (_xform.asInstanceOf[Int]: @switch) match {
-        //case Xform_map | Xform_flatMap | Xform_foreach | Xform_filter | Xform_collect => v.isInstanceOf[Success[F]]
-        //case Xform_recover | Xform_recoverWith                                        => v.isInstanceOf[Failure[F]]
-        //case Xform_transform | Xform_transformWith | Xform_onComplete | _             => true
         case Xform_map           => isSuccess
         case Xform_flatMap       => isSuccess
         case Xform_transform     => true
@@ -376,19 +368,21 @@ private[future] final object Promise {
 
     // Gets invoked by run()
     private[this] final def handle(): Unit =
-      (_xform.asInstanceOf[Int]: @switch) match {
-        case Xform_map           => doMap()
-        case Xform_flatMap       => doFlatMap()
-        case Xform_transform     => doTransform()
-        case Xform_transformWith => doTransformWith()
-        case Xform_foreach       => doForeach()
-        case Xform_onComplete    => doOnComplete()
-        case Xform_recover       => doRecover()
-        case Xform_recoverWith   => doRecoverWith()
-        case Xform_filter        => doFilter()
-        case Xform_collect       => doCollect()
-        case _                   => ()
-      }
+      if (relevant()) {
+        (_xform.asInstanceOf[Int]: @switch) match {
+          case Xform_map           => doMap()
+          case Xform_flatMap       => doFlatMap()
+          case Xform_transform     => doTransform()
+          case Xform_transformWith => doTransformWith()
+          case Xform_foreach       => doForeach()
+          case Xform_onComplete    => doOnComplete()
+          case Xform_recover       => doRecover()
+          case Xform_recoverWith   => doRecoverWith()
+          case Xform_filter        => doFilter()
+          case Xform_collect       => doCollect()
+          case _                   => ()
+        }
+      } else tryComplete(_arg.asInstanceOf[Try[T]])
 
     // Gets invoked by the ExecutionContext, when we have a value to transform.
     // Invariant: if (_arg.isInstanceOf[Try[F]] && (_fun ne null))

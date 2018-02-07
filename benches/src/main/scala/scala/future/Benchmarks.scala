@@ -331,6 +331,71 @@ class FlatMapBenchmark extends OpBenchmark {
   }
 }
 
+class RecoverBenchmark extends OpBenchmark {
+  final val recoverFunStdlib: PartialFunction[Throwable, Result] = { case _ => stdlibFailure.get }
+  final val recoverFunImproved: PartialFunction[Throwable, Result] = { case _ => improvedFailure.get }
+
+  @tailrec private[this] final def nextS(i: Int, f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+      if (i > 0) { nextS(i - 1, f.recover(recoverFunStdlib)) } else { f }
+
+  @tailrec private[this] final def nextI(i: Int, f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+      if (i > 0) { nextI(i - 1, f.recover(recoverFunImproved)) } else { f }
+
+  @Benchmark final def stdlib_pre(): Boolean =
+    await(nextS(recursion, stdlib_pre_f_p.future)(stdlibEC))
+
+  @Benchmark final def stdlib_post(): Boolean = {
+    val stdlib_post_p = stdlib.Promise[Result]()
+    val f = nextS(recursion, stdlib_post_p.future)(stdlibEC)
+    stdlib_post_p.complete(stdlibFailure)
+    await(f)
+  }
+
+  @Benchmark final def improved_pre(): Boolean = {
+    await(nextI(recursion, improved_pre_f_p.future)(improvedEC))
+  }
+
+  @Benchmark final def improved_post(): Boolean = {
+    val improved_post_p = improved.Promise[Result]()
+    val f = nextI(recursion, improved_post_p.future)(improvedEC)
+    improved_post_p.complete(improvedFailure)
+    await(f)
+  }
+}
+
+class RecoverWithBenchmark extends OpBenchmark {
+  final val recoverWithFunStdlib: PartialFunction[Throwable, stdlib.Future[Result]] = { case _ => stdlib_pre_f_p.future }
+  final val recoverWithFunImproved: PartialFunction[Throwable, improved.Future[Result]] = { case _ => improved_pre_f_p.future }
+
+  @tailrec private[this] final def nextS(i: Int, f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+      if (i > 0) { nextS(i - 1, f.recoverWith(recoverWithFunStdlib)) } else { f }
+
+  @tailrec private[this] final def nextI(i: Int, f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+      if (i > 0) { nextI(i - 1, f.recoverWith(recoverWithFunImproved)) } else { f }
+
+  @Benchmark final def stdlib_pre(): Boolean =
+    await(nextS(recursion, stdlib_pre_f_p.future)(stdlibEC))
+
+  @Benchmark final def stdlib_post(): Boolean = {
+    val stdlib_post_p = stdlib.Promise[Result]()
+    val f = nextS(recursion, stdlib_post_p.future)(stdlibEC)
+    stdlib_post_p.complete(stdlibFailure)
+    await(f)
+  }
+
+  @Benchmark final def improved_pre(): Boolean = {
+    await(nextI(recursion, improved_pre_f_p.future)(improvedEC))
+  }
+
+  @Benchmark final def improved_post(): Boolean = {
+    val improved_post_p = improved.Promise[Result]()
+    val f = nextI(recursion, improved_post_p.future)(improvedEC)
+    improved_post_p.complete(improvedFailure)
+    await(f)
+  }
+}
+
+
 class ZipWithBenchmark extends OpBenchmark {
   final val transformationFun = (t1: Result, t2: Result) => t2
 
