@@ -44,40 +44,35 @@ private[future] final object Promise {
     }
 
     private final class Link[T](to: DefaultPromise[T]) extends AtomicReference[DefaultPromise[T]](to) {
-      final def promise(): DefaultPromise[T] = compressedRoot(this)
 
-      @tailrec private[this] def root(of: DefaultPromise[T]): DefaultPromise[T] = {
+      final def promise(owner: DefaultPromise[T]): DefaultPromise[T] =
+        relink(link = this, target = this.get(), owner = owner)
+
+      @tailrec private[this] def root(of: DefaultPromise[T], owner: DefaultPromise[T]): DefaultPromise[T] = {
         val value = of.get()
-        if (value.isInstanceOf[Link[T]]) root(value.asInstanceOf[Link[T]].get())
-        else of
+        if (value.isInstanceOf[Link[T]]) root(of = value.asInstanceOf[Link[T]].get(), owner = owner)
+        else if ((owner ne null) && value.isInstanceOf[Try[T]]) { // Chain completion detected, unlink.
+          unlink(owner = owner, value = value.asInstanceOf[Try[T]]) // TODO: can this be asserted to return true?
+          owner
+        } else of
       }
 
-      @tailrec private[this] final def compressedRoot(linked: Link[T]): DefaultPromise[T] = {
-        val current = linked.get()
-        val target = root(current)
-        // This tries to make the ideal Links point directly to the *end* of the link chain. Can we do better when the end is resolved?
-        if ((current eq target) || compareAndSet(current, target)) target
-        else compressedRoot(linked)
+      @tailrec final def relink(link: Link[T], target: DefaultPromise[T], owner: DefaultPromise[T]): DefaultPromise[T] = {
+        val current = link.get()
+        val newTarget = root(of = target, owner = owner)
+        if ((current eq newTarget) || (owner eq newTarget) || compareAndSet(current, newTarget)) newTarget
+        else relink(link = link, target = target /*TODO: newTarget?*/, owner = owner)
       }
 
-      final def link(target: DefaultPromise[T]): DefaultPromise[T] = {
-          val current = get()
-          val newTarget = root(target)
-          if ((current eq newTarget) || compareAndSet(current, newTarget)) newTarget
-          else link(target)
-      }
-
-      final def unlink(owner: DefaultPromise[T]): Boolean = {
-        val r = root(get()).get()
-        if (r.isInstanceOf[Try[T]]) unlink(owner, r.asInstanceOf[Try[T]]) else false
-      }
-
-      @tailrec private[this] final def unlink(owner: DefaultPromise[T], value: Try[T]): Boolean = {
+      @tailrec private[this] final def unlink(owner: DefaultPromise[T], value: Try[T]): Unit = {
         val l = owner.get()
         if (l.isInstanceOf[Link[T]]) {
-          if (owner.compareAndSet(l, value)) unlink(l.asInstanceOf[Link[T]].get(), value)
-          else unlink(owner, value)
-        } else true
+          if (owner.compareAndSet(l, value))
+            unlink(owner = l.asInstanceOf[Link[T]].get(), value = value)
+          else
+            unlink(owner = owner, value = value)
+        } else if(l.isInstanceOf[Callbacks[T]]) owner.tryComplete(value)
+          else /* if (l.isInstanceOf[Try[T]]) */ ()
       }
     }
 
@@ -161,7 +156,7 @@ private[future] final object Promise {
     @tailrec private final def toString0: String = {
       val state = get()
       if (state.isInstanceOf[Try[T]]) "Future("+state+")"
-      else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].promise().toString0
+      else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].promise(this).toString0
       else /*if (state.isInstanceOf[Callbacks[T]]) */ "Future(<not completed>)"
     }
 
@@ -212,31 +207,27 @@ private[future] final object Promise {
     private final def value0: Try[T] = {
       val state = get()
       if (state.isInstanceOf[Try[T]]) state.asInstanceOf[Try[T]]
-      else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].promise().value0
+      else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].promise(this).value0
       else /*if (state.isInstanceOf[Callbacks[T]])*/ null
     }
 
     override final def tryComplete(value: Try[T]): Boolean = {
       val state = get()
       if (state.isInstanceOf[Try[T]]) false
-      else /*if (state.isInstanceOf[Link[T]]*/ {
-        val r = tryComplete0(state, resolve(value)) // TODO possibly use the resolved value here if tryComplete0 returns true, to unlink with
-        if (state.isInstanceOf[Link[T]]) // TODO evaluate efficiency of performing this here vs performing it on root-traversal
-          state.asInstanceOf[Link[T]].unlink(this)
-        r
-      }
+      else /*if (state.isInstanceOf[Link[T]]*/
+        tryComplete0(state, resolve(value))
     }
 
     @tailrec
     private final def tryComplete0(state: AnyRef, resolved: Try[T]): Boolean = {
       if (state.isInstanceOf[Callbacks[T]]) {
         if (compareAndSet(state, resolved)) {
-          if (state ne Noop) submitWithValue(state.asInstanceOf[Callbacks[T]], resolved) // TODO: if-check needed performance-wise?
+          if (state ne Noop) submitWithValue(state.asInstanceOf[Callbacks[T]], resolved)
           true
         } else tryComplete0(get(), resolved)
       } else if (state.isInstanceOf[Link[T]]) {
-        val p = state.asInstanceOf[Link[T]].promise()
-        p.tryComplete0(p.get(), resolved) // Use this to get tailcall optimization and avoid re-resolution
+        val p = state.asInstanceOf[Link[T]].promise(this) // If this returns owner/this, we are in a completed link
+        (p ne this) && p.tryComplete0(p.get(), resolved) // Use this to get tailcall optimization and avoid re-resolution
       } else /* if(state.isInstanceOf[Try[T]]) */ false
     }
 
@@ -257,19 +248,18 @@ private[future] final object Promise {
         if(compareAndSet(state, newCallbacks)) callbacks
         else dispatchOrAddCallbacks(callbacks)
       } else /*if (state.isInstanceOf[Link[T]])*/
-        state.asInstanceOf[Link[T]].promise().dispatchOrAddCallbacks(callbacks)
+        state.asInstanceOf[Link[T]].promise(this).dispatchOrAddCallbacks(callbacks)
     }
 
-    private[this] final def submitWithValue(cb: Callbacks[T], v: Try[T]): Unit = {
-      if (cb.isInstanceOf[ManyCallbacks[T]]) {
+    private[this] final def submitWithValue(cb: Callbacks[T], v: Try[T]): Unit = 
+      if (cb.isInstanceOf[XformPromise[T,_]]) cb.asInstanceOf[XformPromise[T,_]].submitWithValue(v)
+      else /*if (cb.isInstanceOf[ManyCallbacks[T]])*/ {
         val m = cb.asInstanceOf[ManyCallbacks[T]]
         submitWithValue(m.first, v) // TODO: this will grow the stack—needs real-world proofing
         submitWithValue(m.last, v)
-      } else cb.asInstanceOf[XformPromise[T,_]].submitWithValue(v)
-    }
+      }
 
     /** Link this promise to the root of another promise.
-     *  Should only be be called by transformWith.
      */
     protected[future] final def linkRootOf(target: DefaultPromise[T]): Unit =
       if (this ne target) {
@@ -277,7 +267,7 @@ private[future] final object Promise {
         if (state.isInstanceOf[Try[T]]) {
           if (!target.tryComplete(state.asInstanceOf[Try[T]]))
             throw new IllegalStateException("Cannot link completed promises together")
-        } else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].link(target)
+        } else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].relink(link = state.asInstanceOf[Link[T]], target = target, owner = this)
         else /*if (state.isInstanceOf[Callbacks[T]]) */
           tryLink(state, new Link(target))
       }
@@ -295,14 +285,15 @@ private[future] final object Promise {
      */
     @tailrec
     private[this] final def tryLink(state: AnyRef, target: Link[T]): Unit = {
-      val promise = target.promise()
+      val promise = target.promise(this)
       if (this ne promise) {
         if (state.isInstanceOf[Callbacks[T]]) {
           if (compareAndSet(state, target)) {
-            if (state ne Noop) // TODO: needed?
+            if (state ne Noop)
               promise.dispatchOrAddCallbacks(state.asInstanceOf[Callbacks[T]])
           } else tryLink(get(), target)
-        } else linkRootOf(promise) // If the current state is not Callbacks, fall back to normal linking
+        } else
+          linkRootOf(promise) // If the current state is not Callbacks, fall back to normal linking
       }
     }
   }
@@ -349,26 +340,25 @@ private[future] final object Promise {
         }
       }
 
-    // Gets invoked by run()
-    private[this] final def handle(): Unit =
-        (_xform.asInstanceOf[Int]: @switch) match {
-          case Xform_map           => doMap()
-          case Xform_flatMap       => doFlatMap()
-          case Xform_transform     => doTransform()
-          case Xform_transformWith => doTransformWith()
-          case Xform_foreach       => doForeach()
-          case Xform_onComplete    => doOnComplete()
-          case Xform_recover       => doRecover()
-          case Xform_recoverWith   => doRecoverWith()
-          case Xform_filter        => doFilter()
-          case Xform_collect       => doCollect()
-          case _                   => ()
-        }
-
     // Gets invoked by the ExecutionContext, when we have a value to transform.
     // Invariant: if (_arg.isInstanceOf[Try[F]] && (_fun ne null))
     override final def run(): Unit =
-        try handle() catch {
+        try {
+          val v = _arg.asInstanceOf[Try[F]]
+          (_xform.asInstanceOf[Int]: @switch) match {
+            case Xform_map           => doMap(v)
+            case Xform_flatMap       => doFlatMap(v)
+            case Xform_transform     => doTransform(v)
+            case Xform_transformWith => doTransformWith(v)
+            case Xform_foreach       => doForeach(v)
+            case Xform_onComplete    => doOnComplete(v)
+            case Xform_recover       => doRecover(v)
+            case Xform_recoverWith   => doRecoverWith(v)
+            case Xform_filter        => doFilter(v)
+            case Xform_collect       => doCollect(v)
+            case _                   => doAbort(v)
+          }
+        } catch {
           case t if NonFatal(t) => tryFailure(t)
         } finally { // allow these to GC
           _fun = null
@@ -377,66 +367,55 @@ private[future] final object Promise {
 
     override final def toString: String = super[DefaultPromise].toString
 
-    private[this] final def completeFuture(f: Future[T]): Unit = {
+    private[this] final def completeFuture(f: Future[T]): Unit =
       if(f.isInstanceOf[DefaultPromise[T]]) f.asInstanceOf[DefaultPromise[T]].linkRootOf(this)
       else completeWith(f)
+
+    private[this] final def doMap(v: Try[F]): Unit = tryComplete(v.map(_fun.asInstanceOf[F => T]))
+
+    private[this] final def doFlatMap(v: Try[F]): Unit =
+      if (v.isInstanceOf[Success[F]]) completeFuture(_fun(v.asInstanceOf[Success[F]].value).asInstanceOf[Future[T]])
+      else tryComplete(v.asInstanceOf[Try[T]])
+
+    private[this] final def doTransform(v: Try[F]): Unit = tryComplete(_fun(v).asInstanceOf[Try[T]])
+
+    private[this] final def doTransformWith(v: Try[F]): Unit = completeFuture(_fun(v).asInstanceOf[Future[T]])
+
+    private[this] final def doForeach(v: Try[F]): Unit = {
+      v foreach _fun
+      tryComplete(Future.successOfUnit.asInstanceOf[Try[T]]) //FIXME do this need to ever get completed?
     }
 
-
-    private[this] final def doMap(): Unit = {
-      val a = _arg
-      if (a.isInstanceOf[Success[F]]) trySuccess(_fun(a.asInstanceOf[Success[F]].value).asInstanceOf[T])
-      else tryComplete(a.asInstanceOf[Try[T]])
+    private[this] final def doOnComplete(v: Try[F]): Unit = {
+      _fun(v)
+      tryComplete(Future.successOfUnit.asInstanceOf[Try[T]]) //FIXME do this need to ever get completed?
     }
 
-    private[this] final def doFlatMap(): Unit = {
-      val a = _arg
-      if (a.isInstanceOf[Success[F]]) completeFuture(_fun(a.asInstanceOf[Success[F]].value).asInstanceOf[Future[T]])
-      else tryComplete(a.asInstanceOf[Try[T]])
-    }
+    private[this] final def doRecover(v: Try[F]): Unit =
+      tryComplete(v.recover(_fun.asInstanceOf[PartialFunction[Throwable, F]]).asInstanceOf[Try[T]]) //recover F=:=T
 
-    private[this] final def doTransform(): Unit = tryComplete(_fun(_arg).asInstanceOf[Try[T]])
-
-    private[this] final def doTransformWith(): Unit = completeFuture(_fun(_arg).asInstanceOf[Future[T]])
-
-    private[this] final def doForeach(): Unit = {
-      val a = _arg
-      if (a.isInstanceOf[Success[F]]) _fun(a.asInstanceOf[Success[F]].value)
-
-      tryComplete(Future.successOfUnit.asInstanceOf[Try[T]]) //FIXME
-    }
-
-    private[this] final def doOnComplete(): Unit = {
-      _fun(_arg)
-      tryComplete(Future.successOfUnit.asInstanceOf[Try[T]]) //FIXME
-    }
-
-    private[this] final def doRecover(): Unit =
-      tryComplete(_arg.asInstanceOf[Try[T]].recover(_fun.asInstanceOf[PartialFunction[Throwable, T]]))
-
-    private[this] final def doRecoverWith(): Unit = {
-      val a = _arg
-      if (a.isInstanceOf[Failure[F]]) {
-        val fail = a.asInstanceOf[Failure[F]]
+    private[this] final def doRecoverWith(v: Try[F]): Unit = //recoverWith F=:=T
+      if (v.isInstanceOf[Failure[F]]) {
+        val fail = v.asInstanceOf[Failure[F]]
         val r = _fun.asInstanceOf[PartialFunction[Throwable, Future[T]]].applyOrElse(fail.exception, Future.recoverWithFailed)
         if (r ne Future.recoverWithFailedMarker) completeFuture(r)
         else tryComplete(fail.asInstanceOf[Failure[T]])
-      } else tryComplete(a.asInstanceOf[Try[T]])
-    }
+      } else tryComplete(v.asInstanceOf[Try[T]])
 
-    private[this] final def doFilter(): Unit = {
-      val a = _arg
+    private[this] final def doFilter(v: Try[F]): Unit =
       tryComplete(
-        if (a.isInstanceOf[Failure[F]] || _fun.asInstanceOf[F => Boolean](a.asInstanceOf[Success[F]].value)) a.asInstanceOf[Try[T]]
+        if (v.isInstanceOf[Failure[F]] || _fun.asInstanceOf[F => Boolean](v.asInstanceOf[Success[F]].value)) v.asInstanceOf[Try[T]]
         else Future.filterFailure
       )
-    }
 
-    private[this] final def doCollect(): Unit = {
-      val a = _arg
-      if (a.isInstanceOf[Success[F]]) trySuccess(_fun.asInstanceOf[PartialFunction[F, T]].applyOrElse(a.asInstanceOf[Success[F]].value, Future.collectFailed))
-      else tryComplete(a.asInstanceOf[Try[T]])
-    }
+    private[this] final def doCollect(v: Try[F]): Unit =
+      tryComplete(
+        if (v.isInstanceOf[Success[F]]) Success(_fun.asInstanceOf[PartialFunction[F, T]].applyOrElse(v.asInstanceOf[Success[F]].value, Future.collectFailed))
+        else v.asInstanceOf[Try[T]]
+      )
+
+    private[this] final def doAbort(v: Try[F]): Unit =
+      tryComplete(Failure(new IllegalStateException("BUG: encountered transformation promise with illegal type: " + _xform)))
   }
 
   final class ManyCallbacks[-T](final val first: Callbacks[T], final val last: Callbacks[T]) extends Callbacks[T] {

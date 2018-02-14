@@ -1,7 +1,7 @@
 package scala.future
 
 import scala.concurrent.duration._
-import java.util.concurrent.{TimeUnit,Executor, ExecutorService}
+import java.util.concurrent.{ TimeUnit, Executor, Executors, ExecutorService, ForkJoinPool }
 import org.openjdk.jmh.infra.Blackhole
 import org.openjdk.jmh.annotations._
 import scala.util.{ Try, Success, Failure }
@@ -40,11 +40,11 @@ abstract class AbstractBaseBenchmark {
   def startup: Unit = {
     val (executorStdlib, executorImproved) = pool match {
       case "fjp" =>
-        val fjp = new java.util.concurrent.ForkJoinPool(threads)
+        val fjp = new ForkJoinPool(threads)
         executor = fjp
         (fjp, fjp)
       case "fix" =>
-        val ftp = java.util.concurrent.Executors.newFixedThreadPool(threads)
+        val ftp = Executors.newFixedThreadPool(threads)
         executor = ftp
         (ftp, ftp)
       case "gbl" =>

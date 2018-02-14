@@ -71,7 +71,7 @@ trait Promise[T] {
    *
    *  @return   This promise
    */
-   @deprecated("Since this method is semantically equivalent to `completeWith`, use that instead.", "2.13")
+  @deprecated("Since this method is semantically equivalent to `completeWith`, use that instead.", "2.13")
   final def tryCompleteWith(other: Future[T]): this.type = completeWith(other)
 
   /** Completes the promise with a value.

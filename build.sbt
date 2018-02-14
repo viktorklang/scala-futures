@@ -6,7 +6,7 @@ lazy val root = project in file(".")
 
 lazy val benches = project.in(file("benches")).dependsOn(root)
 
-scalacOptions in Compile ++= Seq("-encoding", "UTF-8", "-target:jvm-1.8", "-feature", "-unchecked", "-deprecation", "-Xlog-reflective-calls", "-Xlint", "-opt:l:project")
+scalacOptions in Compile ++= Seq("-encoding", "UTF-8", "-target:jvm-1.8", "-feature", "-unchecked", "-deprecation", "-Xlog-reflective-calls", "-Xlint", "-opt:l:inline")
 
 libraryDependencies += "junit" % "junit" % "4.11" % "test"
 
