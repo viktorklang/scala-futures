@@ -1,13 +1,13 @@
 package scala.future.impl
 
-import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.CountDownLatch
+import java.util.concurrent.{ ConcurrentLinkedQueue, CountDownLatch, Executor, Executors, ExecutionException, RejectedExecutionException }
 import org.junit.Assert._
 import org.junit.{ After, Before, Test }
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
 import scala.annotation.tailrec
 import scala.concurrent.{ ExecutionContext, Await }
+import scala.concurrent.duration._
 import scala.future.impl.Promise.DefaultPromise
 import scala.util.{ Failure, Success, Try }
 import scala.util.control.NonFatal
@@ -26,7 +26,7 @@ class DefaultPromiseTest {
   type ChainId = Int
 
   /** The state of a set of set of linked promises. */
-  case class Chain(
+  final case class Chain(
     promises: Set[PromiseId],
     state: Either[Set[HandlerId],Try[Result]]
   )
@@ -72,7 +72,7 @@ class DefaultPromiseTest {
     case object IllegalThrown extends Effect
 
     /** Runs an operation while verifying that the operation has the expected effect */
-    private def checkEffect(expected: Effect)(f: => Any) {
+    private def checkEffect(expected: Effect)(f: => Any): Unit = {
       assert(handlerQueue.isEmpty()) // Should have been cleared by last usage
       val result = Try(f)
 
@@ -83,7 +83,7 @@ class DefaultPromiseTest {
         fireCounts = fireCounts.updated(key, newCount)
       }
 
-      def assertIllegalResult = result match {
+      def assertIllegalResult() = result match {
         case Failure(e: IllegalStateException) => ()
         case _ => fail(s"Expected IllegalStateException: $result")
       }
@@ -108,7 +108,7 @@ class DefaultPromiseTest {
     }
 
     /** Check each promise has the expected value. */
-    private def assertPromiseValues() {
+    private def assertPromiseValues(): Unit = {
       for ((cid, chain) <- chains; p <- chain.promises) {
         chain.state match {
           case Right(result) => assertEquals(Some(result), promises(p).value)
@@ -128,7 +128,7 @@ class DefaultPromiseTest {
     }
 
     /** Complete a promise */
-    def complete(p: PromiseId) {
+    def complete(p: PromiseId): Unit = {
       val r = Success(freshId())
       val (cid, chain) = promiseChain(p).get
       val (completionEffect, newState) = chain.state match {
@@ -223,7 +223,7 @@ class DefaultPromiseTest {
   case class AttachHandler(p: PromiseKey) extends Action
 
   /** Tests a sequence of actions on a Tester. Creates promises as needed. */
-  private def testActions(actions: Seq[Action]) {
+  private def testActions(actions: Seq[Action]): Unit = {
     val t = new Tester()
     var pMap = Map.empty[PromiseKey, PromiseId]
     def byKey(key: PromiseKey): PromiseId = {
@@ -243,11 +243,11 @@ class DefaultPromiseTest {
   }
 
   /** Tests all permutations of actions for `count` promises */
-  private def testPermutations(count: Int) {
+  private def testPermutations(count: Int): Unit = {
     val ps = (0 until count).toList
     val pPairs = for (a <- ps; b <- ps) yield (a, b)
 
-    var allActions = ps.map(Complete(_)) ++ pPairs.map { case (a, b) => Link(a, b) } ++ ps.map(AttachHandler(_))
+    val allActions = ps.map(Complete(_)) ++ pPairs.map { case (a, b) => Link(a, b) } ++ ps.map(AttachHandler(_))
     for ((permutation, i) <- allActions.permutations.zipWithIndex) {
       testActions(permutation)
     }
@@ -255,20 +255,20 @@ class DefaultPromiseTest {
 
   /** Test all permutations of actions with a single promise */
   @Test
-  def testPermutations1 {
+  def testPermutations1(): Unit = {
     testPermutations(1)
   }
 
   /** Test all permutations of actions with two promises - about 40 thousand */
   @Test
-  def testPermutations2 {
+  def testPermutations2(): Unit = {
     testPermutations(2)
   }
 
   /** Link promises in different orders, using the same link structure as is
    *  used in Future.flatMap */
   @Test
-  def simulateFlatMapLinking {
+  def simulateFlatMapLinking(): Unit = {
     val random = new scala.util.Random(1)
     for (_ <- 0 until 10) {
       val t = new Tester()
@@ -303,7 +303,7 @@ class DefaultPromiseTest {
   /** Link promises together on more than one thread, using the same link
    *  structure as is used in Future.flatMap */
   @Test
-  def testFlatMapLinking {
+  def testFlatMapLinking(): Unit = {
     for (_ <- 0 until 100) {
       val flatMapCount = 100
       val startLatch = new CountDownLatch(1)
@@ -339,6 +339,28 @@ class DefaultPromiseTest {
       doneLatch.await()
       assertEquals(Some(Success(1)), p.value)
     }
+  }
+
+  @Test
+  def interruptHandling(): Unit = {
+    implicit val e = ExecutionContext.fromExecutorService(Executors.newFixedThreadPool(1))
+    val p = new DefaultPromise[String]()
+    val f = p.future.map(_ => Thread.sleep(2000))
+    p.success("foo")
+    Thread.sleep(20)
+    e.shutdownNow()
+
+    val Failure(ee: ExecutionException) = Await.ready(f, 2.seconds).value.get
+    assertTrue(ee.getCause.isInstanceOf[InterruptedException])
+  }
+
+  @Test
+  def rejectedExecutionException(): Unit = {
+    implicit val e = ExecutionContext.fromExecutor((r: Runnable) => throw new RejectedExecutionException("foo"))
+    val p = new DefaultPromise[String]()
+    p.success("foo")
+    val f = p.future.map(identity)
+    val Failure(t: RejectedExecutionException) = Await.ready(f, 2.seconds).value.get
   }
 
 }
