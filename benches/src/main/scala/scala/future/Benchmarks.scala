@@ -1,7 +1,7 @@
 package scala.future
 
 import scala.concurrent.duration._
-import java.util.concurrent.{ TimeUnit, Executor, Executors, ExecutorService, ForkJoinPool }
+import java.util.concurrent.{ TimeUnit, Executor, Executors, ExecutorService, ForkJoinPool, CountDownLatch }
 import org.openjdk.jmh.infra.Blackhole
 import org.openjdk.jmh.annotations._
 import scala.util.{ Try, Success, Failure }
@@ -663,32 +663,41 @@ class CompleteWithBenchmark extends OpBenchmark {
 }
 
 class CallbackBenchmark extends OpBenchmark {
-  final val callback = (t: Try[Result]) => ()
+  class Callback(recursion: Int) extends CountDownLatch(recursion) with Function1[Try[Result], Unit] {
+    override def apply(t:Try[Result]): Unit = this.countDown()
+  }
 
-  @tailrec private[this] final def nextS(i: Int, f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
-      if (i > 0) { nextS(i - 1, { f.onComplete(callback); f }) } else { f }
+  @tailrec private[this] final def nextS(i: Int, callback: Callback, f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
+      if (i > 0) { nextS(i - 1, callback, { f.onComplete(callback); f }) } else { f }
 
-  @tailrec private[this] final def nextI(i: Int, f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
-      if (i > 0) { nextI(i - 1, { f.onComplete(callback); f }) } else { f }
+  @tailrec private[this] final def nextI(i: Int, callback: Callback, f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
+      if (i > 0) { nextI(i - 1, callback, { f.onComplete(callback); f }) } else { f }
 
-  @Benchmark final def stdlib_pre(): Boolean =
-    await(nextS(recursion, stdlib_pre_s_p.future)(stdlibEC))
+  @Benchmark final def stdlib_pre(): Unit = {
+    val callback = new Callback(recursion)
+    nextS(recursion, callback, stdlib_pre_s_p.future)(stdlibEC)
+    callback.await()
+  }
 
-  @Benchmark final def stdlib_post(): Boolean = {
+  @Benchmark final def stdlib_post(): Unit = {
     val stdlib_post_p = stdlib.Promise[Result]()
-    val f = nextS(recursion, stdlib_post_p.future)(stdlibEC)
+    val callback = new Callback(recursion)
+    nextS(recursion, callback, stdlib_post_p.future)(stdlibEC)
     stdlib_post_p.complete(stdlibSuccess)
-    await(f)
+    callback.await()
   }
 
-  @Benchmark final def improved_pre(): Boolean = {
-    await(nextI(recursion, improved_pre_s_p.future)(improvedEC))
+  @Benchmark final def improved_pre(): Unit = {
+    val callback = new Callback(recursion)
+    nextI(recursion, callback,improved_pre_s_p.future)(improvedEC)
+    callback.await()
   }
 
-  @Benchmark final def improved_post(): Boolean = {
+  @Benchmark final def improved_post(): Unit = {
     val improved_post_p = improved.Promise[Result]()
-    val f = nextI(recursion, improved_post_p.future)(improvedEC)
+    val callback = new Callback(recursion)
+    nextI(recursion, callback, improved_post_p.future)(improvedEC)
     improved_post_p.complete(improvedSuccess)
-    await(f)
+    callback.await()
   }
 }
