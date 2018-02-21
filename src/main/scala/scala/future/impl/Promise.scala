@@ -61,7 +61,7 @@ private[future] final object Promise {
         val current = link.get()
         val newTarget = root(of = target, owner = owner)
         if ((current eq newTarget) || (owner eq newTarget) || compareAndSet(current, newTarget)) newTarget
-        else relink(link = link, target = target /*TODO: newTarget?*/, owner = owner)
+        else relink(link = link, target = target, owner = owner) // TODO: would it be safe to resume with `target = newTarget`?
       }
 
       @tailrec private[this] final def unlink(owner: DefaultPromise[T], value: Try[T]): Unit = {
@@ -269,7 +269,8 @@ private[future] final object Promise {
       if (cb.isInstanceOf[Transformation[T,_]]) cb.asInstanceOf[Transformation[T,_]].submitWithValue(v)
       else /*if (cb.isInstanceOf[ManyCallbacks[T]])*/ {
         val m = cb.asInstanceOf[ManyCallbacks[T]]
-        submitWithValue(m.first, v) // TODO: this will grow the stack—needs real-world proofing
+        if (m.first.isInstanceOf[Transformation[T,_]]) m.first.asInstanceOf[Transformation[T,_]].submitWithValue(v)
+        else submitWithValue(m.first, v) // FIXME: this will grow the stack—needs real-world proofing. Most of the time `first` will be a Tranformation though.
         submitWithValue(m.last, v)
       }
 
@@ -408,12 +409,12 @@ private[future] final object Promise {
 
     private[this] final def doForeach(v: Try[F]): Unit = {
       v foreach _fun
-      tryComplete(Future.successOfUnit.asInstanceOf[Try[T]]) //FIXME do this need to ever get completed?
+      tryComplete(Future.successOfUnit.asInstanceOf[Try[T]]) // The results of this will never be observed.
     }
 
     private[this] final def doOnComplete(v: Try[F]): Unit = {
       _fun(v)
-      tryComplete(Future.successOfUnit.asInstanceOf[Try[T]]) //FIXME do this need to ever get completed?
+      tryComplete(Future.successOfUnit.asInstanceOf[Try[T]]) // The results of this will never be observed.
     }
 
     private[this] final def doRecover(v: Try[F]): Unit =
