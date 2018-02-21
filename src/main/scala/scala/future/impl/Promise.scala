@@ -135,13 +135,17 @@ private[future] final object Promise {
       else this.asInstanceOf[Future[S]]
     }
 
-    override def filter(@deprecatedName('pred) p: T => Boolean)(implicit executor: ExecutionContext): Future[T] =
-      if (!get.isInstanceOf[Failure[T]]) super[Future].filter(p) // Short-circuit if we get a Success
+    override def filter(@deprecatedName('pred) p: T => Boolean)(implicit executor: ExecutionContext): Future[T] = {
+      val state = get()
+      if (!state.isInstanceOf[Failure[T]]) dispatchOrAddCallbacks(state, new Transformation[T, T](Xform_filter, p, executor)) // Short-circuit if we get a Success
       else this
+    }
 
-    override def collect[S](pf: PartialFunction[T, S])(implicit executor: ExecutionContext): Future[S] =
-      if (!get.isInstanceOf[Failure[T]]) super[Future].collect(pf) // Short-circuit if we get a Success
+    override def collect[S](pf: PartialFunction[T, S])(implicit executor: ExecutionContext): Future[S] = {
+      val state = get()
+      if (!state.isInstanceOf[Failure[T]]) dispatchOrAddCallbacks(state, new Transformation[T, S](Xform_collect, pf, executor)) // Short-circuit if we get a Success
       else this.asInstanceOf[Future[S]]
+    }
 
     override def recoverWith[U >: T](pf: PartialFunction[Throwable, Future[U]])(implicit executor: ExecutionContext): Future[U] = {
       val state = get()

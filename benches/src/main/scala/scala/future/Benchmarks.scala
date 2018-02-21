@@ -465,12 +465,13 @@ class VariousBenchmark extends OpBenchmark {
   final val filterFun: Result => Boolean = _ ne null
   final val transformFun: Try[Result] => Try[Result] = _ => throw null
   final val recoverFun: PartialFunction[Throwable, Result] = { case _ => "OK" }
+  final val keepLeft: (Result, Result) => Result = (a,b) => a
 
   @tailrec private[this] final def nextS(i: Int, f: stdlib.Future[Result])(implicit ec: stdlib.ExecutionContext): stdlib.Future[Result] =
-      if (i > 0) { nextS(i - 1, f.map(mapFun).flatMap(stdlibFlatMapFun).filter(filterFun).zipWith(f)((a, b) => a).transform(transformFun).recover(recoverFun)) } else { f }
+      if (i > 0) { nextS(i - 1, f.map(mapFun).flatMap(stdlibFlatMapFun).filter(filterFun).zipWith(f)(keepLeft).transform(transformFun).recover(recoverFun)) } else { f }
 
   @tailrec private[this] final def nextI(i: Int, f: improved.Future[Result])(implicit ec: stdlib.ExecutionContext): improved.Future[Result] =
-      if (i > 0) { nextI(i - 1, f.map(mapFun).flatMap(improvedFlatMapFun).filter(filterFun).zipWith(f)((a, b) => a).transform(transformFun).recover(recoverFun)) } else { f }
+      if (i > 0) { nextI(i - 1, f.map(mapFun).flatMap(improvedFlatMapFun).filter(filterFun).zipWith(f)(keepLeft).transform(transformFun).recover(recoverFun)) } else { f }
 
   @Benchmark final def stdlib_pre(): Boolean =
     await(nextS(recursion, stdlib_pre_s_p.future)(stdlibEC))
