@@ -159,10 +159,9 @@ private[future] final object Promise {
       else this.asInstanceOf[Future[U]]
     }
 
-    /* TODO: is this worth overriding?
     override def mapTo[S](implicit tag: scala.reflect.ClassTag[S]): Future[S] =
       if (!get.isInstanceOf[Failure[T]]) super[Future].mapTo[S](tag) // Short-circuit if we get a Success
-      else this.asInstanceOf[Future[S]]*/
+      else this.asInstanceOf[Future[S]]
 
 
     override def toString: String = toString0
@@ -329,7 +328,7 @@ private[future] final object Promise {
    */
   sealed trait Callbacks[-T]
 
-  private[this] final val Noop = new Transformation[Nothing, Nothing](Int.MinValue, null, InternalCallbackExecutor)
+  private[this] final val Noop = new Transformation[Nothing, Nothing](-127, null, InternalCallbackExecutor)
 
   final class Transformation[-F, T] private[this] (
     private[this] final var _fun: Any => Any,
