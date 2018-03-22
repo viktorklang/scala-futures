@@ -276,41 +276,23 @@ private[future] final object Promise {
 
     /** Link this promise to the root of another promise.
      */
-    protected[future] final def linkRootOf(target: DefaultPromise[T]): Unit =
+    @tailrec protected[future] final def linkRootOf(target: DefaultPromise[T], link: Link[T]): Unit =
       if (this ne target) {
         val state = get()
         if (state.isInstanceOf[Try[T]]) {
           if(!target.tryComplete(state.asInstanceOf[Try[T]]))
             throw new IllegalStateException("Cannot link completed promises together")
         } else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].relink(link = state.asInstanceOf[Link[T]], target = target, owner = this)
-        else /*if (state.isInstanceOf[Callbacks[T]]) */
-          tryLink(state, new Link(target))
+        else /*if (state.isInstanceOf[Callbacks[T]]) */ {
+          val l = if (link ne null) link else new Link(target)
+          val p = l.promise(this)
+          if (p ne this) {
+            if (compareAndSet(state, l)) {
+              if (state ne Noop) p.dispatchOrAddCallbacks(p.get(), state.asInstanceOf[Callbacks[T]])
+            } else linkRootOf(p, l)
+          }
+        }
       }
-
-    /** Link this promise to another promise so that both promises share the same
-     *  externally-visible state. Depending on the current state of this promise, this
-     *  may involve different things. For example, any onComplete listeners will need
-     *  to be transferred.
-     *
-     *  If this promise is already completed, then the same effect as linking -
-     *  sharing the same completed value - is achieved by simply sending this
-     *  promise's result to the target promise.
-     *
-     *  Should only be called by linkRootOf().
-     */
-    @tailrec
-    private[this] final def tryLink(state: AnyRef, target: Link[T]): Unit = {
-      val promise = target.promise(this)
-      if (this ne promise) {
-        if (state.isInstanceOf[Callbacks[T]]) {
-          if (compareAndSet(state, target)) {
-            if (state ne Noop)
-              promise.dispatchOrAddCallbacks(promise.get(), state.asInstanceOf[Callbacks[T]])
-          } else tryLink(get(), target)
-        } else
-          linkRootOf(promise) // If the current state is not Callbacks, fall back to normal linking
-      }
-    }
   }
 
   // Byte tags for unpacking transformation function inputs or outputs
@@ -397,7 +379,7 @@ private[future] final object Promise {
     override final def toString: String = super[DefaultPromise].toString
 
     private[this] final def completeFuture(f: Future[T]): Unit =
-      if(f.isInstanceOf[DefaultPromise[T]]) f.asInstanceOf[DefaultPromise[T]].linkRootOf(this)
+      if(f.isInstanceOf[DefaultPromise[T]]) f.asInstanceOf[DefaultPromise[T]].linkRootOf(this, null)
       else completeWith(f)
 
     private[this] final def doMap(v: Try[F]): Unit = tryComplete(v.map(_fun.asInstanceOf[F => T]))
