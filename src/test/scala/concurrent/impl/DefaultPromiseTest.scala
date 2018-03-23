@@ -170,7 +170,7 @@ class DefaultPromiseTest {
 
       // Perform the linking and merge the chains, if appropriate
 
-      checkEffect(linkEffect) { promiseA.linkRootOf(promiseB, null) }
+      checkEffect(linkEffect) { promiseA.linkRootOf(promiseB) }
 
       val (newCidA, newCidB) = mergeOp match {
         case NoMerge => (cidA, cidB)
@@ -328,7 +328,7 @@ class DefaultPromiseTest {
           execute { p1.success(1) }
         } else {
           val p2 = new DefaultPromise[Int]()
-          execute { p2.linkRootOf(p1, null) }
+          execute { p2.linkRootOf(p1) }
           flatMapTimes(count - 1, p2)
         }
       }

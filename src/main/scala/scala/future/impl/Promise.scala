@@ -43,39 +43,6 @@ private[future] final object Promise {
       }
     }
 
-    private final class Link[T](to: DefaultPromise[T]) extends AtomicReference[DefaultPromise[T]](to) {
-
-      final def promise(owner: DefaultPromise[T]): DefaultPromise[T] =
-        relink(link = this, target = this.get(), owner = owner)
-
-      @tailrec private[this] def root(of: DefaultPromise[T], owner: DefaultPromise[T]): DefaultPromise[T] = {
-        val value = of.get()
-        if (value.isInstanceOf[Link[T]]) root(of = value.asInstanceOf[Link[T]].get(), owner = owner)
-        else if ((owner ne null) && value.isInstanceOf[Try[T]]) { // Chain completion detected, unlink.
-          unlink(owner = owner, value = value.asInstanceOf[Try[T]]) // TODO: can this be asserted to return true?
-          owner
-        } else of
-      }
-
-      @tailrec final def relink(link: Link[T], target: DefaultPromise[T], owner: DefaultPromise[T]): DefaultPromise[T] = {
-        val current = link.get()
-        val newTarget = root(of = target, owner = owner)
-        if ((current eq newTarget) || (owner eq newTarget) || compareAndSet(current, newTarget)) newTarget
-        else relink(link = link, target = target, owner = owner) // TODO: would it be safe to resume with `target = newTarget`?
-      }
-
-      @tailrec private[this] final def unlink(owner: DefaultPromise[T], value: Try[T]): Unit = {
-        val l = owner.get()
-        if (l.isInstanceOf[Link[T]]) {
-          if (owner.compareAndSet(l, value))
-            unlink(owner = l.asInstanceOf[Link[T]].get(), value = value)
-          else
-            unlink(owner = owner, value = value)
-        } else if(l.isInstanceOf[Callbacks[T]]) owner.tryComplete(value)
-          else /* if (l.isInstanceOf[Try[T]]) */ ()
-      }
-    }
-
     // requireNonNull is paramount to guard against null completions
     private[this] final def resolve[T](value: Try[T]): Try[T] =
       if (requireNonNull(value).isInstanceOf[Success[T]]) value
@@ -99,7 +66,7 @@ private[future] final object Promise {
     /**
      * Constructs a new, un-completed, Promise.
      */
-    def this() = this(Noop: AnyRef)
+    def this() = this(NoCallbacks: AnyRef)
 
     /**
      * Returns the associaed `Future` with this `Promise`
@@ -169,7 +136,7 @@ private[future] final object Promise {
     @tailrec private final def toString0: String = {
       val state = get()
       if (state.isInstanceOf[Try[T]]) "Future("+state+")"
-      else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].promise(this).toString0
+      else if (state.isInstanceOf[DefaultPromise[T]]) compressedRoot(state.asInstanceOf[DefaultPromise[T]], this).toString0
       else /*if (state.isInstanceOf[Callbacks[T]]) */ "Future(<not completed>)"
     }
 
@@ -220,26 +187,25 @@ private[future] final object Promise {
     private final def value0: Try[T] = {
       val state = get()
       if (state.isInstanceOf[Try[T]]) state.asInstanceOf[Try[T]]
-      else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].promise(this).value0
+      else if (state.isInstanceOf[DefaultPromise[T]]) compressedRoot(state.asInstanceOf[DefaultPromise[T]], this).value0
       else /*if (state.isInstanceOf[Callbacks[T]])*/ null
     }
 
     override final def tryComplete(value: Try[T]): Boolean = {
       val state = get()
       if (state.isInstanceOf[Try[T]]) false
-      else /*if (state.isInstanceOf[Link[T]]*/
-        tryComplete0(state, resolve(value))
+      else tryComplete0(state, resolve(value))
     }
 
     @tailrec
     private final def tryComplete0(state: AnyRef, resolved: Try[T]): Boolean =
       if (state.isInstanceOf[Callbacks[T]]) {
         if (compareAndSet(state, resolved)) {
-          if (state ne Noop) submitWithValue(state.asInstanceOf[Callbacks[T]], resolved)
+          if (state ne NoCallbacks) submitWithValue(state.asInstanceOf[Callbacks[T]], resolved)
           true
         } else tryComplete0(get(), resolved)
-      } else if (state.isInstanceOf[Link[T]]) {
-        val p = state.asInstanceOf[Link[T]].promise(this) // If this returns owner/this, we are in a completed link
+      } else if (state.isInstanceOf[DefaultPromise[T]]) {
+        val p = compressedRoot(state.asInstanceOf[DefaultPromise[T]], this) // If this returns owner/this, we are in a completed link
         (p ne this) && p.tryComplete0(p.get(), resolved) // Use this to get tailcall optimization and avoid re-resolution
       } else /* if(state.isInstanceOf[Try[T]]) */ false
 
@@ -250,49 +216,109 @@ private[future] final object Promise {
      *  Used by `onComplete()` to add callbacks to a promise and by `link()` to transfer callbacks
      *  to the root promise when linking two promises together.
      */
-    @tailrec private final def dispatchOrAddCallbacks[C <: Callbacks[T]](state: AnyRef, callbacks: C): C =
+    @tailrec private final def dispatchOrAddCallbacks[C <: Callback[T]](state: AnyRef, callbacks: C): C =
       if (state.isInstanceOf[Try[T]]) {
         submitWithValue(callbacks, state.asInstanceOf[Try[T]])
         callbacks
       } else if (state.isInstanceOf[Callbacks[T]]) {
-        val newCallbacks = if (state eq Noop) callbacks else new ManyCallbacks[T](callbacks, state.asInstanceOf[Callbacks[T]])
-        if(compareAndSet(state, newCallbacks)) callbacks
+        if(compareAndSet(state, prependCallbacks(callbacks, state.asInstanceOf[Callbacks[T]]))) callbacks
         else dispatchOrAddCallbacks(get(), callbacks)
-      } else /*if (state.isInstanceOf[Link[T]])*/ {
-        val p = state.asInstanceOf[Link[T]].promise(this)
+      } else /*if (state.isInstanceOf[DefaultPromise[T]])*/ {
+        val p = compressedRoot(state.asInstanceOf[DefaultPromise[T]])
         p.dispatchOrAddCallbacks(p.get(), callbacks)
       }
 
-    private[this] final def submitWithValue(cb: Callbacks[T], v: Try[T]): Unit = 
-      if (cb.isInstanceOf[Transformation[T,_]]) cb.asInstanceOf[Transformation[T,_]].submitWithValue(v)
-      else /*if (cb.isInstanceOf[ManyCallbacks[T]])*/ {
+    private[this] final def prependCallbacks(first: Callback[T], last: Callbacks[T]): Callbacks[T] =
+      if (last eq NoCallbacks) new Callbacks(Noop, first)
+      else new Callbacks(first, if (last.first eq Noop) last.last else last)
+
+    private[this] final def submitWithValue(cb: Callback[T], v: Try[T]): Unit = 
+      if (cb.isInstanceOf[Callbacks[T]]) {
         // FIXME: this will grow the stack—needs real-world proofing. Most of the time `first` will be a Tranformation though.
-        val m = cb.asInstanceOf[ManyCallbacks[T]]
+        val m = cb.asInstanceOf[Callbacks[T]]
         if (m.first.isInstanceOf[Transformation[T,_]]) m.first.asInstanceOf[Transformation[T,_]].submitWithValue(v)
         else submitWithValue(m.first, v)
         if (m.last.isInstanceOf[Transformation[T,_]]) m.last.asInstanceOf[Transformation[T,_]].submitWithValue(v)
         else submitWithValue(m.last, v)
-      }
+      } else cb.asInstanceOf[Transformation[T,_]].submitWithValue(v)
 
-    /** Link this promise to the root of another promise.
+    /** Get the root promise for this promise, compressing the link chain to that
+     *  promise if necessary.
+     *
+     *  For promises that are not linked, the result of calling
+     *  `compressedRoot()` will the promise itself. However for linked promises,
+     *  this method will traverse each link until it locates the root promise at
+     *  the base of the link chain.
+     *
+     *  As a side effect of calling this method, the link from this promise back
+     *  to the root promise will be updated ("compressed") to point directly to
+     *  the root promise. This allows intermediate promises in the link chain to
+     *  be garbage collected. Also, subsequent calls to this method should be
+     *  faster as the link chain will be shorter.
      */
-    @tailrec protected[future] final def linkRootOf(target: DefaultPromise[T], link: Link[T]): Unit =
-      if (this ne target) {
+    private final def compressedRoot(owner: DefaultPromise[T]): DefaultPromise[T] = {
+      val state = get()
+      if (state.isInstanceOf[DefaultPromise[T]]) compressedRoot(state.asInstanceOf[DefaultPromise[T]], owner)
+      else this
+    }
+
+    @tailrec
+    private[this] final def compressedRoot(linked: DefaultPromise[T], owner: DefaultPromise[T]): DefaultPromise[T] = {
+      val target = linked.root(owner)
+      if ((linked eq target) || (owner eq target) || compareAndSet(linked, target)) target
+      else {
         val state = get()
-        if (state.isInstanceOf[Try[T]]) {
-          if(!target.tryComplete(state.asInstanceOf[Try[T]]))
-            throw new IllegalStateException("Cannot link completed promises together")
-        } else if (state.isInstanceOf[Link[T]]) state.asInstanceOf[Link[T]].relink(link = state.asInstanceOf[Link[T]], target = target, owner = this)
-        else /*if (state.isInstanceOf[Callbacks[T]]) */ {
-          val l = if (link ne null) link else new Link(target)
-          val p = l.promise(this)
-          if (p ne this) {
-            if (compareAndSet(state, l)) {
-              if (state ne Noop) p.dispatchOrAddCallbacks(p.get(), state.asInstanceOf[Callbacks[T]])
-            } else linkRootOf(p, l)
-          }
-        }
+        if (state.isInstanceOf[DefaultPromise[T]]) compressedRoot(state.asInstanceOf[DefaultPromise[T]], owner)
+        else this
       }
+    }
+
+    /** Get the promise at the root of the chain of linked promises. Used by `compressedRoot()`.
+     *  The `compressedRoot()` method should be called instead of this method, as it is important
+     *  to compress the link chain whenever possible.
+     */
+    @tailrec
+    private final def root(owner: DefaultPromise[T]): DefaultPromise[T] = {
+      val state = get()
+      if (state.isInstanceOf[DefaultPromise[T]]) state.asInstanceOf[DefaultPromise[T]].root(owner)
+      else if(state.isInstanceOf[Try[T]]) {
+        @tailrec def unlink(owner: DefaultPromise[T], value: Try[T]): Unit = {
+          val l = owner.get()
+          if (l.isInstanceOf[DefaultPromise[T]])
+            unlink(if (owner.compareAndSet(l, value)) l.asInstanceOf[DefaultPromise[T]] else owner, value )
+          else if(l.isInstanceOf[Callbacks[T]]) owner.tryComplete(value)
+          else /* if (l.isInstanceOf[Try[T]]) */ ()
+        }
+        unlink(owner, state.asInstanceOf[Try[T]])
+        owner
+      } else this
+    }
+
+    /** Link this promise to the root of another promise using `link()`. Should only be
+     *  be called by transformWith.
+     */
+    protected[future] final def linkRootOf(target: DefaultPromise[T]): Unit = link(target.compressedRoot(target)) // FIXME correct owner here?
+
+    /** Link this promise to another promise so that both promises share the same
+     *  externally-visible state. Depending on the current state of this promise, this
+     *  may involve different things. For example, any onComplete callbacks will need
+     *  to be transferred.
+     *
+     *  If this promise is already completed, then the same effect as linking -
+     *  sharing the same completed value - is achieved by simply sending this
+     *  promise's result to the target promise.
+     */
+    @tailrec
+    private final def link(target: DefaultPromise[T]): Unit = if (this ne target) {
+      val state = get()
+      if (state.isInstanceOf[Try[T]]) {
+        if (!target.tryComplete(state.asInstanceOf[Try[T]]))
+          throw new IllegalStateException("Cannot link completed promises together")
+      }
+      else if (state.isInstanceOf[DefaultPromise[T]]) compressedRoot(state.asInstanceOf[DefaultPromise[T]], this).link(target)
+      else if (compareAndSet(state, target)) target.dispatchOrAddCallbacks(target.get(), state.asInstanceOf[Callbacks[T]])
+      else link(target)
+    }
   }
 
   // Byte tags for unpacking transformation function inputs or outputs
@@ -309,15 +335,17 @@ private[future] final object Promise {
 
     /* Marker trait
    */
-  sealed trait Callbacks[-T]
+  sealed trait Callback[-T]
 
-  private[this] final val Noop = new Transformation[Nothing, Nothing](-127, null, InternalCallbackExecutor)
+  private[this] final val Noop = new Transformation[Any, Any](-127, null, InternalCallbackExecutor)
+  private[this] final val NoCallbacks = new Callbacks[Nothing](Noop, Noop)
+
 
   final class Transformation[-F, T] private[this] (
     private[this] final var _fun: Any => Any,
     private[this] final var _arg: AnyRef,
     private[this] final val _xform: Byte
-  ) extends DefaultPromise[T]() with Callbacks[F] with Runnable with OnCompleteRunnable {
+  ) extends DefaultPromise[T]() with Callback[F] with Runnable with OnCompleteRunnable {
     def this(xform: Int, f: _ => _, ec: ExecutionContext) = this(f.asInstanceOf[Any => Any], ec.prepare(): AnyRef, xform.asInstanceOf[Byte])
 
     // Gets invoked when a value is available, schedules it to be run():ed by the ExecutionContext
@@ -379,7 +407,7 @@ private[future] final object Promise {
     override final def toString: String = super[DefaultPromise].toString
 
     private[this] final def completeFuture(f: Future[T]): Unit =
-      if(f.isInstanceOf[DefaultPromise[T]]) f.asInstanceOf[DefaultPromise[T]].linkRootOf(this, null)
+      if(f.isInstanceOf[DefaultPromise[T]]) f.asInstanceOf[DefaultPromise[T]].linkRootOf(this)
       else completeWith(f)
 
     private[this] final def doMap(v: Try[F]): Unit = tryComplete(v.map(_fun.asInstanceOf[F => T]))
@@ -428,7 +456,7 @@ private[future] final object Promise {
       tryComplete(Failure(new IllegalStateException("BUG: encountered transformation promise with illegal type: " + _xform)))
   }
 
-  final class ManyCallbacks[-T](final val first: Callbacks[T], final val last: Callbacks[T]) extends Callbacks[T] {
-    override final def toString: String = "ManyCallbacks"
+  final class Callbacks[-T](final val first: Callback[T], final val last: Callback[T]) extends Callback[T] {
+    override final def toString: String = "Callbacks"
   }
 }
